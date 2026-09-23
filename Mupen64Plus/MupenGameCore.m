@@ -72,6 +72,11 @@ NSString *MupenControlNames[] = {
     uint8_t _padData[4][OEN64ButtonCount];
     int8_t _xAxis[4];
     int8_t _yAxis[4];
+    // Which controller paks the loaded game accepts, from Mupen64Plus' ROM database
+    BOOL _romSupportsRumblePak;
+    BOOL _romSupportsMemoryPak;
+    // Last rumble state sent for each player; games rewrite it every frame
+    BOOL _rumbleOn[4];
     NSUInteger _frameCounter;
     double _sampleRate;
     BOOL _initializing;
@@ -89,6 +94,7 @@ NSString *MupenControlNames[] = {
 }
 
 - (void)OE_didReceiveStateChangeForParamType:(m64p_core_param)paramType value:(int)newValue;
+- (void)OE_setRumble:(BOOL)on forPlayerIndex:(int)index;
 - (void)_beginLoadGame;
 - (void)_postRetroAchievementsSessionSnapshot;
 
@@ -441,14 +447,52 @@ static void MupenGetKeys(int Control, BUTTONS *Keys)
 
 static void MupenInitiateControllers (CONTROL_INFO ControlInfo)
 {
+    __strong MupenGameCore *current = _current;
+
+    /* Insert a Rumble Pak only in games that support rumble but not the Memory Pak.
+     * Mupen64Plus leaves the slot empty when a game doesn't support the chosen pak,
+     * so for these games the Memory Pak never did anything. Games that support both
+     * keep the Memory Pak, so nobody's saves change. */
+    int pak = PLUGIN_MEMPAK;
+    // TEMP (local rumble test only): the ROM database marks almost every game as
+    // supporting the Memory Pak, so prefer the Rumble Pak whenever rumble is supported.
+    // The real version needs a per-player Memory Pak / Rumble Pak setting.
+    if (current != nil && current->_romSupportsRumblePak)
+        pak = PLUGIN_RUMBLE_PAK;
+
     ControlInfo.Controls[0].Present = 1;
-    ControlInfo.Controls[0].Plugin = PLUGIN_MEMPAK;
+    ControlInfo.Controls[0].Plugin = pak;
     ControlInfo.Controls[1].Present = 1;
-    ControlInfo.Controls[1].Plugin = PLUGIN_MEMPAK;
+    ControlInfo.Controls[1].Plugin = pak;
     ControlInfo.Controls[2].Present = 1;
-    ControlInfo.Controls[2].Plugin = PLUGIN_MEMPAK;
+    ControlInfo.Controls[2].Plugin = pak;
     ControlInfo.Controls[3].Present = 1;
     ControlInfo.Controls[3].Plugin = PLUGIN_NONE;
+}
+
+/* Mupen64Plus calls this when the game writes to a pak. With a Rumble Pak inserted,
+ * turning rumble on or off arrives as a pak write to address 0xC000, with the data
+ * bytes set to 0x01 (on) or 0x00 (off). */
+static void MupenControllerCommand(int Control, unsigned char *Command)
+{
+    if (Command == NULL)
+        return;
+
+    const unsigned char JoybusPakWrite = 0x03;
+    unsigned int address = ((Command[3] << 8) | Command[4]) & 0xFFE0;
+    if (Command[2] != JoybusPakWrite || address != 0xC000)
+        return;
+
+    GET_CURRENT_OR_RETURN();
+    if (Control < 0 || Control >= 4)
+        return;
+
+    // Games rewrite the rumble state every frame; only pass on changes
+    BOOL rumbleOn = Command[5] != 0;
+    if (current->_rumbleOn[Control] == rumbleOn)
+        return;
+
+    [current OE_setRumble:rumbleOn forPlayerIndex:Control];
 }
 
 static AUDIO_INFO AudioInfo;
@@ -560,6 +604,13 @@ static void MupenSetAudioSpeed(int percent)
     if (CoreDoCommand(M64CMD_ROM_OPEN, (int)romData.length, (void *)romData.bytes) != M64ERR_SUCCESS)
         return NO;
 
+    m64p_rom_settings romSettings = {0};
+    if (CoreDoCommand(M64CMD_ROM_GET_SETTINGS, sizeof(romSettings), &romSettings) == M64ERR_SUCCESS) {
+        _romSupportsRumblePak = romSettings.rumble != 0;
+        _romSupportsMemoryPak = romSettings.mempak != 0;
+    }
+    NSLog(@"[Mupen64Plus] Controller paks supported by this game: rumble=%d mempak=%d", _romSupportsRumblePak, _romSupportsMemoryPak);
+
     // RetroAchievements: create rc_client and observe the OE token. Game identification
     // happens in the login callback so we never miss the token notification that fires
     // immediately after setRetroAchievementsToken.
@@ -649,6 +700,7 @@ static void MupenSetAudioSpeed(int percent)
     // Load Input
     input.getKeys = MupenGetKeys;
     input.initiateControllers = MupenInitiateControllers;
+    input.controllerCommand = MupenControllerCommand;
     plugin_start(M64PLUGIN_INPUT);
 
     // Load RSP
@@ -719,8 +771,23 @@ static void MupenSetAudioSpeed(int percent)
     _frameCounter ++;
 }
 
+- (void)OE_setRumble:(BOOL)on forPlayerIndex:(int)index
+{
+    _rumbleOn[index] = on;
+    [NSNotificationCenter.defaultCenter postNotificationName:OEGameCoreRumbleDidChangeNotification
+                                                      object:self
+                                                    userInfo:@{ OEGameCoreRumblePlayerKey: @(index + 1),
+                                                                OEGameCoreRumbleStrengthKey: @(on ? 1.0 : 0.0) }];
+}
+
 - (void)stopEmulation
 {
+    // Don't leave a controller buzzing after the game closes
+    for (int i = 0; i < 4; i++) {
+        if (_rumbleOn[i])
+            [self OE_setRumble:NO forPlayerIndex:i];
+    }
+
     if (_raTokenObserver) {
         [[NSNotificationCenter defaultCenter] removeObserver:_raTokenObserver];
         _raTokenObserver = nil;

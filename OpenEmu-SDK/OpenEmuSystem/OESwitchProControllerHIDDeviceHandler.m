@@ -43,6 +43,10 @@
 #define MAX_RESPONSE_ATTEMPTS (10)
 #define MAX_RESPONSE_WAIT_SECONDS (10.0)
 #define PING_INTERVAL_SECONDS (60.0)
+/* The controller stops vibrating unless the rumble state is resent regularly (SDL uses 50 ms) */
+#define RUMBLE_REFRESH_SECONDS (0.05)
+#define RUMBLE_REPORT_LENGTH_BLUETOOTH (49)
+#define RUMBLE_REPORT_LENGTH_USB (64)
 
 #define NINTENDO_VENDOR_ID (0x57E)
 #define PRO_CONTROLLER_PRODUCT_ID (0x2009)
@@ -324,6 +328,11 @@ static CGFloat OEHACScaleValueWithCalibration(
 {
     NSThread *_thread;
     NSTimer *_pingTimer;
+
+    // TEMP DIAGNOSTICS (rumble branch only): track connection health
+    CFAbsoluteTime _diagConnectedAt;
+    CFAbsoluteTime _diagLastInputReport;
+    uint8_t _diagLastBattery;
     
     uint8_t _reportBuffer[MAX_INPUT_REPORT_SIZE];
     uint8_t _packetCounter;
@@ -337,6 +346,10 @@ static CGFloat OEHACScaleValueWithCalibration(
     /* The Nintendo Switch Online N64 controller speaks the same protocol as
      * the Pro Controller, with the same button bits, but has no right stick. */
     BOOL _isN64Controller;
+
+    /* HD Rumble data for both motors (4 bytes each), and the timer that resends it */
+    uint8_t _rumbleData[8];
+    NSTimer *_rumbleTimer;
 }
 
 
@@ -436,8 +449,12 @@ static CGFloat OEHACScaleValueWithCalibration(
     /* In BetterJoyForCemu there is a comment that says the controller wants to be
      * periodically pinged to keep its connection alive. Even though I've never seen
      * a spontaneous disconnection, it's better to be safe than sorry */
+    _diagConnectedAt = CFAbsoluteTimeGetCurrent();
+    _diagLastBattery = 0xFF;
+    NSLog(@"[DIAG dev %p] connected (%@)", self, _isN64Controller ? @"N64" : @"Pro");
     _pingTimer = [NSTimer timerWithTimeInterval:PING_INTERVAL_SECONDS repeats:YES block:^(NSTimer * _Nonnull timer) {
-        [self _sendOneWaySubcommand:OEHACSubcmdNoop withData:NULL length:0];
+        BOOL sent = [self _sendOneWaySubcommand:OEHACSubcmdNoop withData:NULL length:0];
+        NSLog(@"[DIAG dev %p] keep-alive ping sent=%d, last input %.1fs ago", self, sent, CFAbsoluteTimeGetCurrent() - self->_diagLastInputReport);
     }];
     [_pingTimer setTolerance:PING_INTERVAL_SECONDS * 0.1];
     [[NSRunLoop mainRunLoop] addTimer:_pingTimer forMode:NSDefaultRunLoopMode];
@@ -448,10 +465,14 @@ static CGFloat OEHACScaleValueWithCalibration(
 
 - (void)disconnect
 {
+    NSLog(@"[DIAG dev %p] DISCONNECTED after %.0fs connected; last input report %.1fs ago; last battery nibble 0x%X",
+          self, CFAbsoluteTimeGetCurrent() - _diagConnectedAt, CFAbsoluteTimeGetCurrent() - _diagLastInputReport, _diagLastBattery);
     [super disconnect];
-    
+
     [_pingTimer invalidate];
-    
+    [_rumbleTimer invalidate];
+    _rumbleTimer = nil;
+
     /* we don't want to disconnect the controller every time the helper
      * app terminates, just when OpenEmu closes */
     if ([[[NSBundle mainBundle] bundleIdentifier] isEqual:@"org.openemu.OpenEmu"]) {
@@ -607,6 +628,70 @@ static CGFloat OEHACScaleValueWithCalibration(
         value = 0;
     event = [OEHIDEvent axisEventWithDeviceHandler:self timestamp:now axis:yaxis value:value cookie:cookie];
     [self dispatchEvent:event];
+}
+
+
+#pragma mark - Rumble
+
+
+/* Called on the main thread. Switch controllers use "HD Rumble": each motor takes a
+ * frequency and an amplitude. Encoding follows SDL's Switch driver and
+ * https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/rumble_data_table.md */
+- (void)forceFeedbackWithStrongIntensity:(CGFloat)strongIntensity weakIntensity:(CGFloat)weakIntensity
+{
+    CGFloat intensity = MAX(0.0, MIN(1.0, MAX(strongIntensity, weakIntensity)));
+
+    uint8_t motor[4];
+    if (intensity <= 0.0) {
+        if (_isN64Controller) {
+            /* SDL: N64-style pads buzz with the standard "neutral" value, so use zero amplitude */
+            const uint8_t off[4] = {0x00, 0x00, 0x01, 0x40};
+            memcpy(motor, off, 4);
+        } else {
+            const uint8_t off[4] = {0x00, 0x01, 0x40, 0x40};
+            memcpy(motor, off, 4);
+        }
+    } else {
+        /* Row 1-100 of Nintendo's amplitude table; the high and low amplitude values follow
+         * a simple pattern along the rows (0x02, 0x04 … 0xC8 and 0x8040, 0x0041 … 0x0072) */
+        NSInteger row = MAX(1, lround(intensity * 100));
+        const uint16_t highFrequency = 0x0074;
+        const uint8_t lowFrequency = 0x3D;
+        const uint8_t highAmplitude = (uint8_t)(row * 2);
+        const uint16_t lowAmplitude = ((row & 1) ? 0x8000 : 0) | (0x40 + row / 2);
+        motor[0] = highFrequency & 0xFF;
+        motor[1] = highAmplitude | ((highFrequency >> 8) & 0x01);
+        motor[2] = lowFrequency | ((lowAmplitude >> 8) & 0x80);
+        motor[3] = lowAmplitude & 0xFF;
+    }
+    memcpy(&_rumbleData[0], motor, 4);
+    memcpy(&_rumbleData[4], motor, 4);
+
+    [_rumbleTimer invalidate];
+    _rumbleTimer = nil;
+    [self _sendRumbleReport];
+
+    if (intensity > 0.0) {
+        __weak __auto_type weakSelf = self;
+        _rumbleTimer = [NSTimer scheduledTimerWithTimeInterval:RUMBLE_REFRESH_SECONDS repeats:YES block:^(NSTimer * _Nonnull timer) {
+            [weakSelf _sendRumbleReport];
+        }];
+    }
+}
+
+
+- (void)_sendRumbleReport
+{
+    uint8_t report[RUMBLE_REPORT_LENGTH_USB] = {0};
+    report[0] = OEHACOutputReportIDRumble;
+    report[1] = _packetCounter;
+    _packetCounter = (_packetCounter + 1) & 0xF;
+    memcpy(&report[2], _rumbleData, sizeof(_rumbleData));
+
+    CFIndex length = _isUSB ? RUMBLE_REPORT_LENGTH_USB : RUMBLE_REPORT_LENGTH_BLUETOOTH;
+    IOReturn ret = IOHIDDeviceSetReport([self device], kIOHIDReportTypeOutput, report[0], report, length);
+    if (ret != kIOReturnSuccess)
+        NSLog(@"[dev %p] Could not send rumble, error: %x", self, ret);
 }
 
 
@@ -853,6 +938,13 @@ fail:
          * Four Thunderbolt 3 Ports), via timestamp comparison with both the LOG_COMMUNICATION
          * define enalbed and the HID Event Log option enabled:
          * ~500 microseconds (0.030 frames at 60 FPS) */
+        _diagLastInputReport = CFAbsoluteTimeGetCurrent();
+        /* High nibble: battery level 0 (empty) to 8 (full), plus 1 while charging */
+        uint8_t battery = ((OEHACStandardHIDInputReport *)data)->chargingStatus >> 4;
+        if (battery != _diagLastBattery) {
+            NSLog(@"[DIAG dev %p] battery nibble 0x%X (level %d/8%@)", self, battery, battery & 0xE, (battery & 1) ? @", charging" : @"");
+            _diagLastBattery = battery;
+        }
         __block OEHACStandardHIDInputReport report = *((OEHACStandardHIDInputReport *)(data));
         dispatch_async(dispatch_get_main_queue(), ^{
             [self _dispatchEventsWithStandardInputReport:&report];
