@@ -85,6 +85,10 @@ extern NSString *const OEDeviceManagerDeviceHandlerUserInfoKey;
 - (id)addUnhandledEventMonitorHandler:(void(^)(OEDeviceHandler *handler, OEHIDEvent *event))handler;
 - (void)removeMonitor:(id)monitor;
 
+/// Stops rumble on every connected controller that supports it. Call when a game ends
+/// without the chance to stop rumble itself, for example when its helper process crashes.
+- (void)stopAllRumble;
+
 @end
 
 NS_ASSUME_NONNULL_END

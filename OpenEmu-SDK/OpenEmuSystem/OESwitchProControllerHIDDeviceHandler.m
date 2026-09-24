@@ -328,11 +328,6 @@ static CGFloat OEHACScaleValueWithCalibration(
 {
     NSThread *_thread;
     NSTimer *_pingTimer;
-
-    // TEMP DIAGNOSTICS (rumble branch only): track connection health
-    CFAbsoluteTime _diagConnectedAt;
-    CFAbsoluteTime _diagLastInputReport;
-    uint8_t _diagLastBattery;
     
     uint8_t _reportBuffer[MAX_INPUT_REPORT_SIZE];
     uint8_t _packetCounter;
@@ -452,12 +447,8 @@ static CGFloat OEHACScaleValueWithCalibration(
     /* In BetterJoyForCemu there is a comment that says the controller wants to be
      * periodically pinged to keep its connection alive. Even though I've never seen
      * a spontaneous disconnection, it's better to be safe than sorry */
-    _diagConnectedAt = CFAbsoluteTimeGetCurrent();
-    _diagLastBattery = 0xFF;
-    NSLog(@"[DIAG dev %p] connected (%@)", self, _isN64Controller ? @"N64" : @"Pro");
     _pingTimer = [NSTimer timerWithTimeInterval:PING_INTERVAL_SECONDS repeats:YES block:^(NSTimer * _Nonnull timer) {
-        BOOL sent = [self _sendOneWaySubcommand:OEHACSubcmdNoop withData:NULL length:0];
-        NSLog(@"[DIAG dev %p] keep-alive ping sent=%d, last input %.1fs ago", self, sent, CFAbsoluteTimeGetCurrent() - self->_diagLastInputReport);
+        [self _sendOneWaySubcommand:OEHACSubcmdNoop withData:NULL length:0];
     }];
     [_pingTimer setTolerance:PING_INTERVAL_SECONDS * 0.1];
     [[NSRunLoop mainRunLoop] addTimer:_pingTimer forMode:NSDefaultRunLoopMode];
@@ -468,14 +459,12 @@ static CGFloat OEHACScaleValueWithCalibration(
 
 - (void)disconnect
 {
-    NSLog(@"[DIAG dev %p] DISCONNECTED after %.0fs connected; last input report %.1fs ago; last battery nibble 0x%X",
-          self, CFAbsoluteTimeGetCurrent() - _diagConnectedAt, CFAbsoluteTimeGetCurrent() - _diagLastInputReport, _diagLastBattery);
     [super disconnect];
-
+    
     [_pingTimer invalidate];
     [_rumbleTimer invalidate];
     _rumbleTimer = nil;
-
+    
     /* we don't want to disconnect the controller every time the helper
      * app terminates, just when OpenEmu closes */
     if ([[[NSBundle mainBundle] bundleIdentifier] isEqual:@"org.openemu.OpenEmu"]) {
@@ -953,13 +942,6 @@ fail:
          * Four Thunderbolt 3 Ports), via timestamp comparison with both the LOG_COMMUNICATION
          * define enalbed and the HID Event Log option enabled:
          * ~500 microseconds (0.030 frames at 60 FPS) */
-        _diagLastInputReport = CFAbsoluteTimeGetCurrent();
-        /* High nibble: battery level 0 (empty) to 8 (full), plus 1 while charging */
-        uint8_t battery = ((OEHACStandardHIDInputReport *)data)->chargingStatus >> 4;
-        if (battery != _diagLastBattery) {
-            NSLog(@"[DIAG dev %p] battery nibble 0x%X (level %d/8%@)", self, battery, battery & 0xE, (battery & 1) ? @", charging" : @"");
-            _diagLastBattery = battery;
-        }
         __block OEHACStandardHIDInputReport report = *((OEHACStandardHIDInputReport *)(data));
         dispatch_async(dispatch_get_main_queue(), ^{
             [self _dispatchEventsWithStandardInputReport:&report];

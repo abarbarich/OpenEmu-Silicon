@@ -35,6 +35,7 @@
 #import "OEPS4HIDDeviceHandler.h"
 #import "OEXBox360HIDDeviceHander.h"
 #import "OETouchbarHIDDeviceHandler.h"
+#import "OESwitchProControllerHIDDeviceHandler.h"
 #import "OEHIDEvent_Internal.h"
 
 #import <objc/runtime.h>
@@ -276,6 +277,14 @@ static const void * kOEBluetoothDevicePairSyncStyleKey = &kOEBluetoothDevicePair
     return [[_deviceHandlers allObjects] sortedArrayUsingComparator:^ NSComparisonResult (OEDeviceHandler *obj1, OEDeviceHandler *obj2) {
         return [@([obj1 deviceIdentifier]) compare:@([obj2 deviceIdentifier])];
     }];
+}
+
+- (void)stopAllRumble
+{
+    for (OEDeviceHandler *handler in [self controllerDeviceHandlers]) {
+        if ([handler isKindOfClass:[OESwitchProControllerHIDDeviceHandler class]])
+            [(OESwitchProControllerHIDDeviceHandler *)handler forceFeedbackWithStrongIntensity:0 weakIntensity:0];
+    }
 }
 
 - (NSArray<OEDeviceHandler *> *)keyboardDeviceHandlers

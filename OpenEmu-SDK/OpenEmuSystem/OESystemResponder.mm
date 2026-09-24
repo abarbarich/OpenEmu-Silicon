@@ -29,7 +29,7 @@ extern "C" {
 #import "NSResponder+OEHIDAdditions.h"
 #import "OEEvent.h"
 #import "OEDeviceHandler.h"
-#import "OEHIDDeviceHandler.h"
+#import "OESwitchProControllerHIDDeviceHandler.h"
 #import "OEBindingsController.h"
 #import "OEPlayerBindings.h"
 #import "OEHIDEvent_Internal.h"
@@ -179,16 +179,13 @@ typedef struct OEPlayerRapidFireState {
              * player (e.g. right after a controller disconnects) */
             OESystemBindings *bindings = [OEBindingsController.defaultBindingsController systemBindingsForSystemController:self.controller];
             OEDevicePlayerBindings *playerBindings = [bindings devicePlayerBindingsForPlayer:player];
-            // TEMP DIAGNOSTICS (rumble branch only)
-            NSLog(@"[DIAG rumble] player %lu strength %.2f; bindings for that player: number=%lu device=%@; P1=%@ P2=%@",
-                  (unsigned long)player, strength, (unsigned long)playerBindings.playerNumber,
-                  [playerBindings.deviceHandler class],
-                  [bindings devicePlayerBindingsForPlayer:1].deviceHandler.uniqueIdentifier,
-                  [bindings devicePlayerBindingsForPlayer:2].deviceHandler.uniqueIdentifier);
             if (playerBindings == nil || playerBindings.playerNumber != player) return;
+
+            /* Only Switch controllers for now; other controllers would fall back to the
+             * generic macOS force feedback code, which hasn't been tested with games. */
             OEDeviceHandler *handler = playerBindings.deviceHandler;
-            if ([handler isKindOfClass:OEHIDDeviceHandler.class])
-                [(OEHIDDeviceHandler *)handler forceFeedbackWithStrongIntensity:strength weakIntensity:strength];
+            if ([handler isKindOfClass:OESwitchProControllerHIDDeviceHandler.class])
+                [(OESwitchProControllerHIDDeviceHandler *)handler forceFeedbackWithStrongIntensity:strength weakIntensity:strength];
         }];
 
         /* Create the list of buttons that should not be affected by the rapid fire
