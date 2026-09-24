@@ -53,6 +53,7 @@ static uint8_t l_player_lag[4];
 #define UDP_SEND_KEY_INFO 0
 #define UDP_RECEIVE_KEY_INFO 1
 #define UDP_REQUEST_KEY_INFO 2
+#define UDP_RECEIVE_KEY_INFO_GRATUITOUS 3
 #define UDP_SYNC_DATA 4
 
 //TCP packet formats
@@ -243,11 +244,13 @@ static void netplay_process()
         switch (packet->data[0])
         {
             case UDP_RECEIVE_KEY_INFO:
+            case UDP_RECEIVE_KEY_INFO_GRATUITOUS: // from upstream: inputs the server sends before we ask
                 player = packet->data[1];
                 //current_status is a status update from the server
                 //it will let us know if another player has disconnected, or the games have desynced
                 current_status = packet->data[2];
-                l_player_lag[player] = packet->data[3];
+                if (packet->data[0] == UDP_RECEIVE_KEY_INFO)
+                    l_player_lag[player] = packet->data[3];
                 if (current_status != l_status)
                 {
                     if (((current_status & 0x1) ^ (l_status & 0x1)) != 0)
@@ -500,7 +503,9 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *disable_extra_mem, 
     if (!netplay_is_init())
         return;
 
-    char output_data[21];
+    /* OpenEmu: the netplay server (like upstream Mupen64Plus) exchanges 24 bytes of settings;
+     * this older core only has 20 bytes' worth, so the last 4 are padding. */
+    char output_data[25] = {0};
     uint8_t request;
     if (l_netplay_control[0] != -1) //player 1 is the source of truth for settings
     {
@@ -511,7 +516,7 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *disable_extra_mem, 
         SDLNet_Write32(*si_dma_duration, &output_data[9]);
         SDLNet_Write32(*emumode, &output_data[13]);
         SDLNet_Write32(*no_compiled_jump, &output_data[17]);
-        SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 21);
+        SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 25);
     }
     else
     {
@@ -519,8 +524,8 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *disable_extra_mem, 
         memcpy(&output_data[0], &request, 1);
         SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 1);
         int32_t recv = 0;
-        while (recv < 20)
-            recv += SDLNet_TCP_Recv(l_tcpSocket, &output_data[recv], 20 - recv);
+        while (recv < 24)
+            recv += SDLNet_TCP_Recv(l_tcpSocket, &output_data[recv], 24 - recv);
         *count_per_op = SDLNet_Read32(&output_data[0]);
         *disable_extra_mem = SDLNet_Read32(&output_data[4]);
         *si_dma_duration = SDLNet_Read32(&output_data[8]);

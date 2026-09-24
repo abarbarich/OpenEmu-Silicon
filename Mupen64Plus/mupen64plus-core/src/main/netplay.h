@@ -22,6 +22,10 @@
 #ifndef __NETPLAY_H__
 #define __NETPLAY_H__
 
+/* OpenEmu: netplay is built with a BSD socket stand-in for SDL_net
+ * (Compatibility/SDL/SDL_net.h) */
+#define M64P_NETPLAY 1
+
 #include "device/r4300/cp0.h"
 #include "device/pif/pif.h"
 #include "main/util.h"

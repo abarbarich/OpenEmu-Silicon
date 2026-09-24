@@ -89,6 +89,7 @@ NSString *MupenControlNames[] = {
 }
 
 - (void)OE_didReceiveStateChangeForParamType:(m64p_core_param)paramType value:(int)newValue;
+- (void)OE_joinNetplayRoomIfRequested;
 - (void)_beginLoadGame;
 - (void)_postRetroAchievementsSessionSnapshot;
 
@@ -678,6 +679,63 @@ static void MupenSetAudioSpeed(int percent)
     ConfigSetParameter(configRSP, "DisplayListToGraphicsPlugin", M64TYPE_BOOL, &usingHLE);
 
     LoadPlugin(M64PLUGIN_RSP, @"mupen64plus-rsp-cxd4.so");
+
+    [self OE_joinNetplayRoomIfRequested];
+}
+
+#pragma mark - Netplay (Phase 0 spike)
+
+/* NETPLAY SPIKE: if ~/Library/Application Support/OpenEmu/netplay-spike.json exists, join that
+ * netplay room before the game starts:
+ *     { "host": "100.101.102.103", "port": 45001 }
+ * Takes the first free player slot, so two OpenEmu copies on one Mac become players 1 and 2.
+ * The room must already exist and have been started from the lobby. */
+- (void)OE_joinNetplayRoomIfRequested
+{
+    NSURL *supportURL = [NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *configURL = [supportURL URLByAppendingPathComponent:@"OpenEmu/netplay-spike.json"];
+    NSData *data = [NSData dataWithContentsOfURL:configURL];
+    if (data == nil)
+        return;
+
+    NSDictionary *config = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    NSString *host = [config[@"host"] isKindOfClass:NSString.class] ? config[@"host"] : nil;
+    int port = [config[@"port"] intValue];
+    if (host.length == 0 || port <= 0) {
+        NSLog(@"[Mupen64Plus] Netplay: ignoring %@, it needs \"host\" and \"port\"", configURL.path);
+        return;
+    }
+
+    uint32_t coreVersion = 0;
+    if (CoreDoCommand(M64CMD_NETPLAY_GET_VERSION, NETPLAY_API_VERSION, &coreVersion) != M64ERR_SUCCESS) {
+        NSLog(@"[Mupen64Plus] Netplay: core netplay version %u doesn't match", coreVersion);
+        return;
+    }
+
+    /* The room may not exist yet (the lobby starts it separately), so keep trying for a while */
+    m64p_error result = M64ERR_SYSTEM_FAIL;
+    for (int attempt = 0; attempt < 60; attempt++) {
+        result = CoreDoCommand(M64CMD_NETPLAY_INIT, port, (void *)host.UTF8String);
+        if (result == M64ERR_SUCCESS)
+            break;
+        if (attempt == 0)
+            NSLog(@"[Mupen64Plus] Netplay: waiting for the room at %@:%d to open…", host, port);
+        usleep(500000);
+    }
+    if (result != M64ERR_SUCCESS) {
+        NSLog(@"[Mupen64Plus] Netplay: could not connect to %@:%d after 30 s (error %d)", host, port, result);
+        return;
+    }
+
+    uint32_t registrationID = arc4random();
+    for (int player = 1; player <= 4; player++) {
+        result = CoreDoCommand(M64CMD_NETPLAY_CONTROL_PLAYER, player, &registrationID);
+        if (result == M64ERR_SUCCESS) {
+            NSLog(@"[Mupen64Plus] Netplay: connected to %@:%d as player %d", host, port, player);
+            return;
+        }
+    }
+    NSLog(@"[Mupen64Plus] Netplay: connected to %@:%d but every player slot is taken (error %d)", host, port, result);
 }
 
 - (void)startEmulation
