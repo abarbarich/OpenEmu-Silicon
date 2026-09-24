@@ -90,6 +90,8 @@ NSString *MupenControlNames[] = {
 
 - (void)OE_didReceiveStateChangeForParamType:(m64p_core_param)paramType value:(int)newValue;
 - (void)_beginLoadGame;
+- (BOOL)OE_connectToNetplayServerWithError:(NSError **)error;
+- (void)OE_registerNetplayPlayer;
 - (void)_postRetroAchievementsSessionSnapshot;
 
 @end
@@ -560,6 +562,9 @@ static void MupenSetAudioSpeed(int percent)
     if (CoreDoCommand(M64CMD_ROM_OPEN, (int)romData.length, (void *)romData.bytes) != M64ERR_SUCCESS)
         return NO;
 
+    if (self.netplayHost.length > 0 && ![self OE_connectToNetplayServerWithError:error])
+        return NO;
+
     // RetroAchievements: create rc_client and observe the OE token. Game identification
     // happens in the login callback so we never miss the token notification that fires
     // immediately after setRetroAchievementsToken.
@@ -678,6 +683,59 @@ static void MupenSetAudioSpeed(int percent)
     ConfigSetParameter(configRSP, "DisplayListToGraphicsPlugin", M64TYPE_BOOL, &usingHLE);
 
     LoadPlugin(M64PLUGIN_RSP, @"mupen64plus-rsp-cxd4.so");
+
+    // Registration sends the input plugin's controller pak setup, so it has to follow LoadPlugin
+    if (self.netplayHost.length > 0)
+        [self OE_registerNetplayPlayer];
+}
+
+#pragma mark - Netplay
+
+- (BOOL)OE_connectToNetplayServerWithError:(NSError **)error
+{
+    NSString *host = self.netplayHost;
+    int port = (int)self.netplayPort;
+
+    NSString *failure = nil;
+    uint32_t coreVersion = 0;
+    if (port <= 0 || port > UINT16_MAX)
+        failure = [NSString stringWithFormat:NSLocalizedString(@"The netplay room's port (%d) isn't valid.", @"Netplay error"), port];
+    else if (CoreDoCommand(M64CMD_NETPLAY_GET_VERSION, NETPLAY_API_VERSION, &coreVersion) != M64ERR_SUCCESS)
+        failure = NSLocalizedString(@"This version of the Nintendo 64 core doesn't support netplay.", @"Netplay error");
+    else {
+        // The lobby has already started the room, but give a slow network a few seconds
+        m64p_error result = M64ERR_SYSTEM_FAIL;
+        for (int attempt = 0; attempt < 10 && result != M64ERR_SUCCESS; attempt++) {
+            if (attempt > 0)
+                usleep(500000);
+            result = CoreDoCommand(M64CMD_NETPLAY_INIT, port, (void *)host.UTF8String);
+        }
+        if (result != M64ERR_SUCCESS)
+            failure = [NSString stringWithFormat:NSLocalizedString(@"Couldn't connect to the netplay server at %@:%d.", @"Netplay error"), host, port];
+    }
+
+    if (failure == nil)
+        return YES;
+
+    os_log_error(OS_LOG_DEFAULT, "[Mupen64Plus] Netplay: %{public}@", failure);
+    if (error)
+        *error = [NSError errorWithDomain:OEGameCoreErrorDomain code:OEGameCoreCouldNotStartCoreError userInfo:@{
+            NSLocalizedDescriptionKey: NSLocalizedString(@"The game couldn't join the netplay room.", @"Netplay error"),
+            NSLocalizedRecoverySuggestionErrorKey: failure,
+        }];
+    return NO;
+}
+
+- (void)OE_registerNetplayPlayer
+{
+    int player = (int)self.netplayPlayer;
+    uint32_t registrationID = arc4random();
+    m64p_error result = CoreDoCommand(M64CMD_NETPLAY_CONTROL_PLAYER, player, &registrationID);
+    if (result == M64ERR_SUCCESS)
+        os_log_info(OS_LOG_DEFAULT, "[Mupen64Plus] Netplay: joined %{public}@:%ld as player %d", self.netplayHost, (long)self.netplayPort, player);
+    else
+        // The core then watches the game as a spectator instead of playing
+        os_log_error(OS_LOG_DEFAULT, "[Mupen64Plus] Netplay: couldn't register as player %d (error %d)", player, result);
 }
 
 - (void)startEmulation
@@ -694,6 +752,10 @@ static void MupenSetAudioSpeed(int percent)
         [self.renderDelegate willRenderFrameOnAlternateThread];
 
         CoreDoCommand(M64CMD_EXECUTE, 0, NULL);
+
+        // Tell the server we've left, so the other players see the disconnect
+        if (self.netplayHost.length > 0)
+            CoreDoCommand(M64CMD_NETPLAY_CLOSE, 0, NULL);
     }
 }
 

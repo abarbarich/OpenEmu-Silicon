@@ -210,6 +210,7 @@
 		878419232599569D002ED39D /* rom.c in Sources */ = {isa = PBXBuildFile; fileRef = 3D208D3811824C2200BEAA42 /* rom.c */; };
 		8784192D259956A5002ED39D /* savestates.c in Sources */ = {isa = PBXBuildFile; fileRef = 3D208D3A11824C2200BEAA42 /* savestates.c */; };
 		87841937259956D3002ED39D /* util.c in Sources */ = {isa = PBXBuildFile; fileRef = 3D208D3C11824C2200BEAA42 /* util.c */; };
+		BB4117F749F0D8EE6B16D0AE /* netplay.c in Sources */ = {isa = PBXBuildFile; fileRef = 9E69E6B4E5D65C742A4AD032 /* netplay.c */; };
 		878419412599573B002ED39D /* workqueue.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A12672A16A36FE1000A650A /* workqueue.c */; };
 		8784194B25995832002ED39D /* dummy_audio.c in Sources */ = {isa = PBXBuildFile; fileRef = 3D208D6311824C2200BEAA42 /* dummy_audio.c */; };
 		8784195525995836002ED39D /* dummy_input.c in Sources */ = {isa = PBXBuildFile; fileRef = 3D208D6511824C2200BEAA42 /* dummy_input.c */; };
@@ -435,6 +436,8 @@
 		3D208D3B11824C2200BEAA42 /* savestates.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = savestates.h; sourceTree = "<group>"; };
 		3D208D3C11824C2200BEAA42 /* util.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = util.c; sourceTree = "<group>"; };
 		3D208D3D11824C2200BEAA42 /* util.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = util.h; sourceTree = "<group>"; };
+		9E69E6B4E5D65C742A4AD032 /* netplay.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = netplay.c; sourceTree = "<group>"; };
+		CCF36B362B7DB92F51A17F34 /* netplay.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = netplay.h; sourceTree = "<group>"; };
 		3D208D3E11824C2200BEAA42 /* version.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = version.h; sourceTree = "<group>"; };
 		3D208D5411824C2200BEAA42 /* dynamiclib.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = dynamiclib.h; sourceTree = "<group>"; };
 		3D208D5511824C2200BEAA42 /* dynamiclib_unix.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = dynamiclib_unix.c; sourceTree = "<group>"; };
@@ -1442,6 +1445,8 @@
 				0A12672916A36FE1000A650A /* list.h */,
 				3D208D3411824C2200BEAA42 /* main.c */,
 				3D208D3511824C2200BEAA42 /* main.h */,
+				9E69E6B4E5D65C742A4AD032 /* netplay.c */,
+				CCF36B362B7DB92F51A17F34 /* netplay.h */,
 				9419A0C11A0891D60065CB61 /* profile.c */,
 				9419A0C21A0891D60065CB61 /* profile.h */,
 				3D208D3811824C2200BEAA42 /* rom.c */,
@@ -3284,6 +3289,7 @@
 				8784190F259955D1002ED39D /* rdram.c in Sources */,
 				878419192599561A002ED39D /* cheat.c in Sources */,
 				87841A6B259982D8002ED39D /* main.c in Sources */,
+				BB4117F749F0D8EE6B16D0AE /* netplay.c in Sources */,
 				878419232599569D002ED39D /* rom.c in Sources */,
 				8784192D259956A5002ED39D /* savestates.c in Sources */,
 				87841937259956D3002ED39D /* util.c in Sources */,

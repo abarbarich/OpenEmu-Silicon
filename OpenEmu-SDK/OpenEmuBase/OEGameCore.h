@@ -242,6 +242,13 @@ OE_EXPORTED_CLASS
 @property(nonatomic, copy, nullable) NSURL                    *lockOnRomURL;
 @property(nonatomic, copy, nullable) NSURL                    *lockOnUpmemURL;
 
+/// Netplay server the core should join before the game starts, or nil when not playing online.
+/// Set by the helper before -loadFileAtPath:error:, together with the room's port and this
+/// player's number (1-4) in the room.
+@property(nonatomic, copy, nullable) NSString                 *netplayHost;
+@property(nonatomic)           NSInteger                      netplayPort;
+@property(nonatomic)           NSInteger                      netplayPlayer;
+
 /** The current value for each display mode preference key. Used to fetch the
  *  initial display mode state after the core is initialized.
  *  @note This property is set to the current state of all display modes --

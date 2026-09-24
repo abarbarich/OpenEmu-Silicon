@@ -291,6 +291,9 @@ extension OSLog {
         gameCore.romSerial          = info.romSerial
         gameCore.lockOnRomURL       = info.lockOnRomURL
         gameCore.lockOnUpmemURL     = info.lockOnUpmemURL
+        gameCore.netplayHost        = info.netplayHost
+        gameCore.netplayPort        = info.netplayPort
+        gameCore.netplayPlayer      = info.netplayPlayer
         gameCore.hardcoreEnabled    = _hardcoreEnabled
         
         _systemResponder.client                 = gameCore
