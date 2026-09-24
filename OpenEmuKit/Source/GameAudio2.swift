@@ -54,13 +54,22 @@ final public class GameAudio2: GameAudioProtocol {
     }
     
     @objc public func audioSampleRateDidChange() {
-        guard isRunning else { return }
-        
+        // Before startAudio there is nothing to update; it reads the current rate itself.
+        guard src != nil else { return }
+
+        // Rebuild at the new rate even while audio isn't running yet. Cores often change rate
+        // right after starting (N64 games set their DAC rate while booting), which can land in
+        // the 20 ms between startAudio and its delayed resume. Ignoring it left playback at the
+        // old rate, pulling samples faster than the core produced them: constant underflow,
+        // heard as crackling. A pending resume starts the rebuilt engine.
+        let wasRunning = isRunning
         engine.stop()
         updateSourceNode()
         connectNodes()
         engine.prepare()
-        performResumeAudio()
+        if wasRunning {
+            performResumeAudio()
+        }
     }
     
     public func startAudio() {
