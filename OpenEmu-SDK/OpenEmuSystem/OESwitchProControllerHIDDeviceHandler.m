@@ -40,8 +40,8 @@
 
 
 #define MAX_INPUT_REPORT_SIZE (256)
-#define MAX_RESPONSE_ATTEMPTS (10)
-#define MAX_RESPONSE_WAIT_SECONDS (10.0)
+#define MAX_SEND_ATTEMPTS (5)
+#define RESPONSE_WINDOW_SECONDS (0.5)
 #define PING_INTERVAL_SECONDS (60.0)
 
 #define NINTENDO_VENDOR_ID (0x57E)
@@ -793,41 +793,44 @@ static CGFloat OEHACScaleValueWithCalibration(
 {
     NSAssert(report.length > 1, @"HID reports must be at least one byte long!");
     
-    NSData *ack;
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:MAX_RESPONSE_WAIT_SECONDS];
+    NSData *ack = nil;
     uint8_t reportID = ((uint8_t *)report.bytes)[0];
     
     [_responseAvailable lock];
     
-    _currentResponse = nil;
-    #ifdef LOG_COMMUNICATION
-    NSLog(@"[dev %p] sent output report %@", self, report);
-    #endif
-    IOReturn ret = IOHIDDeviceSetReport([self device], kIOHIDReportTypeOutput, reportID, report.bytes, report.length);
-    if (ret != kIOReturnSuccess) {
-        NSLog(@"[dev %p] Could not send command, error: %x", self, ret);
-        goto fail;
-    }
-    
-    int attempts = 0;
-    while (_currentResponse == nil && attempts < MAX_RESPONSE_ATTEMPTS) {
-        BOOL notTimeout = YES;
-        while (_currentResponse == nil && notTimeout)
-            notTimeout = [_responseAvailable waitUntilDate:deadline];
-        if (!notTimeout && _currentResponse == nil) {
-            NSLog(@"[dev %p] Did not receive ACK from controller after %f s", self,  MAX_RESPONSE_WAIT_SECONDS);
-            goto fail;
+    /* Other programs may be talking to the controller at the same time (a game's helper
+     * process, or macOS' own game controller service), and the controller sends the
+     * replies to their commands to us too. Ignore replies that aren't for our command
+     * and keep waiting; if ours doesn't arrive in time, send the command again. */
+    for (int attempt = 0; attempt < MAX_SEND_ATTEMPTS && ack == nil; attempt++) {
+        _currentResponse = nil;
+        #ifdef LOG_COMMUNICATION
+        NSLog(@"[dev %p] sent output report %@", self, report);
+        #endif
+        IOReturn ret = IOHIDDeviceSetReport([self device], kIOHIDReportTypeOutput, reportID, report.bytes, report.length);
+        if (ret != kIOReturnSuccess) {
+            NSLog(@"[dev %p] Could not send command, error: %x", self, ret);
+            break;
         }
         
-        BOOL accepted = respHandler(_currentResponse, attempts);
-        if (!accepted) {
-            _currentResponse = nil;
-            attempts++;
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:RESPONSE_WINDOW_SECONDS];
+        BOOL timedOut = NO;
+        while (ack == nil && !timedOut) {
+            while (_currentResponse == nil && !timedOut)
+                timedOut = ![_responseAvailable waitUntilDate:deadline];
+            if (_currentResponse == nil)
+                break;
+            
+            if (respHandler(_currentResponse, attempt))
+                ack = _currentResponse;
+            else
+                _currentResponse = nil;
         }
     }
-    ack = _currentResponse;
     
-fail:
+    if (ack == nil)
+        NSLog(@"[dev %p] No valid reply from controller after %d attempts", self, MAX_SEND_ATTEMPTS);
+    
     [_responseAvailable unlock];
     
     return ack;
