@@ -541,7 +541,7 @@ If not, hold down buttons ①+②.</key>
 	<key>Select Disc</key>
 	<string>ディスクを選択</string>
 	<key>Select Display Mode</key>
-	<string>ディスプレイモード</string>
+	<string>ゲームオプション</string>
 	<key>Select Scale</key>
 	<string>スケールを選択</string>
 	<key>Select Shader</key>

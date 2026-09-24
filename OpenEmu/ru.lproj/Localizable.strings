@@ -543,7 +543,7 @@ If not, hold down buttons ①+②.</key>
 	<key>Select Disc</key>
 	<string>Выбрать диск</string>
 	<key>Select Display Mode</key>
-	<string>Выбрать режим отображения</string>
+	<string>Параметры игры</string>
 	<key>Select Scale</key>
 	<string>Выбрать размер</string>
 	<key>Select Shader</key>
