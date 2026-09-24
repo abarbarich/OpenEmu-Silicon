@@ -19,7 +19,11 @@ Not for merging. Notes so the spike can be picked up again.
 - OpenEmu pauses games in the background: turn off `backgroundPause` for tests
   (`defaults write org.openemu.OpenEmu.debug backgroundPause -bool false`).
 - OPEN: player 2 falls further and further behind (makes no progress, spins in
-  netplay_process). Lead suspect: `netplay_ensure_valid` starts a helper thread with
-  OpenEmu's SDL_CreateThread stand-in (Compatibility/SDL/SDLStubs.m), which passes the thread
-  context through a single shared static (`sContext`) — check it actually runs
-  netplay_require_response with the right control_id.
+  netplay_process).
+- Fixed in Compatibility/SDL/SDLStubs.m: SDL_GetTicks returned seconds instead of ms, so the
+  10 s input-request timeout was ~2.8 h and a stall never became a disconnect; and
+  SDL_CreateThread passed its context through one shared static (racy for workqueue.c, which
+  starts several threads in a row). Not yet retested with two players.
+- Next suspect: macOS App Nap / timer throttling on the background copy. Test with
+  `defaults write <bundle-id> NSAppSleepDisabled -bool YES` on player 2's copy, or keep both
+  windows visible.

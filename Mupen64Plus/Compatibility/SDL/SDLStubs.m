@@ -57,7 +57,8 @@ void SDL_DestroyMutex(SDL_mutex *m)
 
 Uint32 SDL_GetTicks(void)
 {
-    return OEMonotonicTime();
+    // SDL returns milliseconds; OEMonotonicTime() is in seconds.
+    return (Uint32)(OEMonotonicTime() * 1000.0);
 }
 
 void SDL_Quit(void)
@@ -102,25 +103,41 @@ void SDL_DestroyCond(SDL_cond *cond)
     free(cond);
 }
 
-static struct {
+// Each thread gets its own start context, so threads created back to back
+// can't overwrite each other's function or argument before they run.
+typedef struct {
+    int (*fn)(void *);
     const char *thread_name;
     void *thread_context;
-} sContext;
+} FakeSDLThreadStart;
 
 void *Fake_SDL_New_Thread(void *p)
 {
-    pthread_setname_np(sContext.thread_name);
-    int (*fn)(void *) = p;
-    return (void*)fn(sContext.thread_context);
+    FakeSDLThreadStart start = *(FakeSDLThreadStart *)p;
+    free(p);
+    if (start.thread_name != NULL)
+        pthread_setname_np(start.thread_name);
+    return (void*)(intptr_t)start.fn(start.thread_context);
 }
 
 SDL_Thread *SDL_CreateThread(int (*fn)(void *), const char *name, void *context)
 {
     pthread_t *thread = malloc(sizeof(pthread_t));
-    
-    sContext.thread_name = name;
-    sContext.thread_context = context;
-    pthread_create(thread, NULL, Fake_SDL_New_Thread, fn);
+    FakeSDLThreadStart *start = malloc(sizeof(FakeSDLThreadStart));
+    if (thread == NULL || start == NULL) {
+        free(thread);
+        free(start);
+        return NULL;
+    }
+
+    start->fn = fn;
+    start->thread_name = name;
+    start->thread_context = context;
+    if (pthread_create(thread, NULL, Fake_SDL_New_Thread, start) != 0) {
+        free(start);
+        free(thread);
+        return NULL;
+    }
     return (SDL_Thread*)thread;
 }
 
@@ -129,7 +146,8 @@ void SDL_WaitThread(SDL_Thread *thread, int *status)
     void *_status;
     
     pthread_join(*((pthread_t*)thread), &_status);
-    *status = (int)_status;
+    if (status != NULL)
+        *status = (int)(intptr_t)_status;
     free(thread);
 }
 
