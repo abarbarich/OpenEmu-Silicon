@@ -833,10 +833,13 @@ static void MupenSetAudioSpeed(int percent)
 - (void)OE_setRumble:(BOOL)on forPlayerIndex:(int)index
 {
     _rumbleOn[index] = on;
-    [NSNotificationCenter.defaultCenter postNotificationName:OEGameCoreRumbleDidChangeNotification
+    /* Same values as OEGameCoreRumbleDidChangeNotification and its keys in OpenEmuBase,
+     * written out so this core still loads in OpenEmu versions without rumble support
+     * (cores are released separately from the app). */
+    [NSNotificationCenter.defaultCenter postNotificationName:@"OEGameCoreRumbleDidChangeNotification"
                                                       object:self
-                                                    userInfo:@{ OEGameCoreRumblePlayerKey: @(index + 1),
-                                                                OEGameCoreRumbleStrengthKey: @(on ? 1.0 : 0.0) }];
+                                                    userInfo:@{ @"OEGameCoreRumblePlayerKey": @(index + 1),
+                                                                @"OEGameCoreRumbleStrengthKey": @(on ? 1.0 : 0.0) }];
 }
 
 - (void)stopEmulation
