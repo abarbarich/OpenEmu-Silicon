@@ -774,6 +774,13 @@ static NSString * const OEGameTableSortDescriptorsKey = @"OEGameTableSortDescrip
             [menu addItem:lockOnMenuItem];
         }
 
+        // Netplay — N64 only for now (Mupen64Plus)
+        if([[game.system systemIdentifier] isEqualToString:@"openemu.system.n64"] && [[game defaultROM] filesAvailable])
+        {
+            [menu addItemWithTitle:NSLocalizedString(@"Host Netplay\u2026", @"Start an online game other players can join") action:@selector(hostNetplayWithSelectedGame:) keyEquivalent:@""];
+            [menu addItemWithTitle:NSLocalizedString(@"Join Netplay\u2026", @"Join an online game another player is hosting") action:@selector(joinNetplayWithSelectedGame:) keyEquivalent:@""];
+        }
+
         // Create Save State Menu
         menuItem = [[NSMenuItem alloc] initWithTitle:NSLocalizedString(@"Play Save State", @"") action:NULL keyEquivalent:@""];
         [menuItem setSubmenu:[self OE_saveStateMenuForGame:game]];

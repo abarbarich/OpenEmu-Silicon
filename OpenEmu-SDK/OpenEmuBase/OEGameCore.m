@@ -615,7 +615,7 @@ static Class GameCoreClass = Nil;
 #pragma clang diagnostic ignored "-Wdeprecated-implementations"
 - (void)rewind:(BOOL)flag
 {
-    if (self.hardcoreEnabled) { isRewinding = NO; return; }
+    if (self.hardcoreEnabled || self.isNetplayActive) { isRewinding = NO; return; }
     if(flag && [self supportsRewinding] && ![[self rewindQueue] isEmpty])
     {
         isRewinding = YES;
@@ -641,6 +641,11 @@ static Class GameCoreClass = Nil;
         self.rate = lastRate;
         [_audioDelegate resumeAudio];
     }
+}
+
+- (BOOL)isNetplayActive
+{
+    return self.netplayHost.length > 0;
 }
 
 - (BOOL)isEmulationPaused
@@ -673,31 +678,33 @@ static Class GameCoreClass = Nil;
 {
     // Fast-forward is permitted in hardcore mode per RA's hardcore-compliance
     // spec (only slowdown and frame advance are restricted, not speed-up).
+    // Netplay players must all run at the same speed.
+    if (self.isNetplayActive) return;
     [self setRate:fastForwardSpeed];
 }
 
 - (void)rewindAtSpeed:(CGFloat)rewindSpeed;
 {
-    if (self.hardcoreEnabled) { isRewinding = NO; return; }
+    if (self.hardcoreEnabled || self.isNetplayActive) { isRewinding = NO; return; }
     isRewinding = (rewindSpeed > 0);
     [self setRate:rewindSpeed];
 }
 
 - (void)slowMotionAtSpeed:(CGFloat)slowMotionSpeed;
 {
-    if (self.hardcoreEnabled) return;
+    if (self.hardcoreEnabled || self.isNetplayActive) return;
     [self setRate:slowMotionSpeed];
 }
 
 - (void)stepFrameForward
 {
-    if (self.hardcoreEnabled) return;
+    if (self.hardcoreEnabled || self.isNetplayActive) return;
     singleFrameStep = YES;
 }
 
 - (void)stepFrameBackward
 {
-    if (self.hardcoreEnabled) return;
+    if (self.hardcoreEnabled || self.isNetplayActive) return;
     singleFrameStep = isRewinding = YES;
 }
 

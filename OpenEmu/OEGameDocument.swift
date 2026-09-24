@@ -86,9 +86,12 @@ final class OEGameDocument: NSDocument {
         case invalidSaveState
         case libraryDatabaseUnavailable
         case noSystemPlugin
+        case netplayGameAlreadyOpen
         
         var errorDescription: String? {
-            if case .fileDoesNotExist = self {
+            if case .netplayGameAlreadyOpen = self {
+                return NSLocalizedString("This game is already open", comment: "Netplay: game already running error reason.")
+            } else if case .fileDoesNotExist = self {
                 return NSLocalizedString("The file you selected doesn't exist", comment: "Inexistent file error reason.")
             } else if case .noCore = self {
                 return NSLocalizedString("OpenEmu could not find a Core to launch the game", comment: "No Core error reason.")
@@ -100,7 +103,9 @@ final class OEGameDocument: NSDocument {
         }
         
         var recoverySuggestion: String? {
-            if case .fileDoesNotExist = self {
+            if case .netplayGameAlreadyOpen = self {
+                return NSLocalizedString("Close the game, then join the netplay room again.", comment: "Netplay: game already running recovery suggestion.")
+            } else if case .fileDoesNotExist = self {
                 return NSLocalizedString("Choose a valid file.", comment: "Inexistent file error recovery suggestion.")
             } else if case .noCore = self {
                 return NSLocalizedString("Make sure your internet connection is active and download a suitable core.", comment: "No Core error recovery suggestion.")
@@ -135,6 +140,8 @@ final class OEGameDocument: NSDocument {
                 return 13
             case .noSystemPlugin:
                 return 14
+            case .netplayGameAlreadyOpen:
+                return 15
             }
         }
     }
@@ -153,6 +160,9 @@ final class OEGameDocument: NSDocument {
     private(set) var systemPlugin: OESystemPlugin!
     private(set) var lockOnROMURL: URL?
     private(set) var lockOnUPMEMURL: URL?
+    /// The netplay room this game is playing in, or nil when playing offline.
+    private(set) var netplaySession: NetplaySession?
+    var isNetplay: Bool { netplaySession != nil }
 
     private(set) var gameViewController: GameViewController!
     
@@ -327,6 +337,12 @@ final class OEGameDocument: NSDocument {
         } catch {
             throw error
         }
+    }
+    
+    init(game: OEDBGame, core: OECorePlugin?, netplaySession: NetplaySession) throws {
+        super.init()
+        self.netplaySession = netplaySession
+        try setUpDocument(with: game.defaultROM!, using: core)
     }
     
     init(saveState state: OEDBSaveState) throws {
@@ -861,7 +877,10 @@ final class OEGameDocument: NSDocument {
                                      corePluginURL: corePlugin.url,
                                      systemPluginURL: systemPlugin.url,
                                      lockOnRomURL: lockOnROMURL,
-                                     lockOnUpmemURL: lockOnUPMEMURL)
+                                     lockOnUpmemURL: lockOnUPMEMURL,
+                                     netplayHost: netplaySession?.host,
+                                     netplayPort: netplaySession?.port ?? 0,
+                                     netplayPlayer: netplaySession?.player ?? 0)
         
         if let managerClassName = UserDefaults.standard.string(forKey: OEGameCoreManagerModePreferenceKey),
            let managerClass = NSClassFromString(managerClassName),
@@ -1075,8 +1094,9 @@ final class OEGameDocument: NSDocument {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
+            // Netplay can't pause: the other players' games would stall waiting for our input
             let backgroundPause = UserDefaults.standard.bool(forKey: OEBackgroundPauseKey)
-            if backgroundPause && self.emulationStatus == .playing {
+            if backgroundPause && !self.isNetplay && self.emulationStatus == .playing {
                 self.requestEmulationPauseRespectingRetroAchievementsHardcore { [weak self] paused in
                     if paused {
                         self?.pausedByGoingToBackground = true
@@ -1183,8 +1203,8 @@ final class OEGameDocument: NSDocument {
         emulationStatus = .starting
         gameCoreManager?.startEmulation() {
             self.emulationStatus = .playing
-            // Cheats are disabled in hardcore mode (RA spec).
-            if HardcoreModePolicy.allows(.cheats, hardcoreEnabled: self.isHardcoreModeEnabled) {
+            // Cheats are disabled in hardcore mode (RA spec) and in netplay (they'd desync the players).
+            if HardcoreModePolicy.allows(.cheats, hardcoreEnabled: self.isHardcoreModeEnabled) && !self.isNetplay {
                 self.cheats.filter(\.isEnabled).forEach { self.setCheat($0) }
             }
             (self.gameWindowController as? GameWindowController)?.gameDidStartPlaying()
@@ -1216,6 +1236,10 @@ final class OEGameDocument: NSDocument {
             if pauseEmulation {
                 if emulationStatus == .playing && isHardcoreModeEnabled && !retroAchievementsHardcorePausePreflightSatisfied {
                     showRetroAchievementsPauseBlockedToast(framesRemaining: 0)
+                    return
+                }
+                if emulationStatus == .playing && isNetplay {
+                    showNetplayBlockedToast()
                     return
                 }
                 SentryService.addBreadcrumb(message: "Emulation paused", category: "emulation")
@@ -1295,6 +1319,16 @@ final class OEGameDocument: NSDocument {
         }
     }
 
+    /// Netplay keeps every player's game running in step, so anything that would pause,
+    /// rewind, speed up or reset one player's game is turned off.
+    private func showNetplayBlockedToast() {
+        gameViewController?.showRetroAchievementsEventToast(
+            title: NSLocalizedString("Not Available in Netplay", comment: "Netplay blocked action toast title"),
+            subtitle: NSLocalizedString("Every player's game has to keep running together.", comment: "Netplay blocked action toast subtitle"),
+            symbolName: "network"
+        )
+    }
+
     private func showRetroAchievementsPauseBlockedToast(framesRemaining: UInt32) {
         let seconds = max(1, Int(ceil(Double(framesRemaining) / 60.0)))
         gameViewController?.showRetroAchievementsEventToast(
@@ -1305,6 +1339,10 @@ final class OEGameDocument: NSDocument {
     }
     
     @objc func resetEmulation(_ sender: Any?) {
+        if isNetplay {
+            showNetplayBlockedToast()
+            return
+        }
         if OEAlert.resetSystem().runModal() == .alertFirstButtonReturn {
             gameCoreManager?.resetEmulation() {
                 self.isEmulationPaused = false
@@ -1637,11 +1675,11 @@ final class OEGameDocument: NSDocument {
     // MARK: - Cheats
     
     var supportsCheats: Bool {
-        return corePlugin.supportsCheatCode(forSystemIdentifier: systemPlugin.systemIdentifier)
+        return !isNetplay && corePlugin.supportsCheatCode(forSystemIdentifier: systemPlugin.systemIdentifier)
     }
 
     var supportsCheatSearch: Bool {
-        return corePlugin.supportsCheatSearch(forSystemIdentifier: systemPlugin.systemIdentifier)
+        return !isNetplay && corePlugin.supportsCheatSearch(forSystemIdentifier: systemPlugin.systemIdentifier)
     }
 
     var supportsOnlineCheats: Bool {
@@ -2494,7 +2532,7 @@ final class OEGameDocument: NSDocument {
     // MARK: - Saving States
     
     var supportsSaveStates: Bool {
-        return lockOnROMURL == nil && !corePlugin.saveStatesNotSupported(forSystemIdentifier: systemPlugin.systemIdentifier)
+        return lockOnROMURL == nil && !isNetplay && !corePlugin.saveStatesNotSupported(forSystemIdentifier: systemPlugin.systemIdentifier)
     }
     
     @objc private func saveState(_ sender: Any?) {
@@ -2836,7 +2874,7 @@ extension OEGameDocument {
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(quickLoad(_:)):
-            guard lockOnROMURL == nil else { return false }
+            guard lockOnROMURL == nil && !isNetplay else { return false }
             let slot = menuItem.representedObject != nil ? (menuItem.representedObject as? Int) ?? 0 : menuItem.tag
             return rom.quickSaveState(inSlot: slot) != nil
         case #selector(quickSave(_:)):
@@ -2847,8 +2885,10 @@ extension OEGameDocument {
                 return true
             } else {
                 menuItem.title = NSLocalizedString("Pause Game", comment: "")
-                return emulationStatus == .playing
+                return emulationStatus == .playing && !isNetplay
             }
+        case #selector(resetEmulation(_:)):
+            return !isNetplay
         case #selector(nextDisplayMode(_:)),
              #selector(lastDisplayMode(_:)):
             return supportsDisplayModeChange
@@ -2951,20 +2991,20 @@ extension OEGameDocument: OESystemBindingsObserver {
     }
     
     func fastForwardGameplay(_ enable: Bool) {
-        if !HardcoreModePolicy.allows(.fastForward, hardcoreEnabled: isHardcoreModeEnabled) { return }
+        if !HardcoreModePolicy.allows(.fastForward, hardcoreEnabled: isHardcoreModeEnabled) || isNetplay { return }
         if emulationStatus != .playing { return }
         gameViewController.showFastForwardNotification(enable)
     }
     
     func rewindGameplay(_ enable: Bool) {
-        if isHardcoreModeEnabled { return }
+        if isHardcoreModeEnabled || isNetplay { return }
         let supportsRewinding = corePlugin.supportsRewinding(forSystemIdentifier: systemIdentifier)
         if !supportsRewinding || emulationStatus != .playing { return }
         gameViewController.showRewindNotification(enable)
     }
 
     func stepGameplayFrameForward() {
-        if isHardcoreModeEnabled { return }
+        if isHardcoreModeEnabled || isNetplay { return }
         if emulationStatus == .playing {
             toggleEmulationPaused(self)
         }
@@ -2974,7 +3014,7 @@ extension OEGameDocument: OESystemBindingsObserver {
     }
 
     func stepGameplayFrameBackward() {
-        if isHardcoreModeEnabled { return }
+        if isHardcoreModeEnabled || isNetplay { return }
         if emulationStatus == .playing {
             toggleEmulationPaused(self)
         }

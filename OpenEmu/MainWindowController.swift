@@ -255,12 +255,21 @@ extension MainWindowController: LibraryControllerDelegate {
         openGameDocument(with: game, core: genesisPlus, saveState: nil, secondAttempt: false, lockOnROM: lockOnROM, disableAutoReload: true)
     }
     
+    func libraryController(_ controller: LibraryController, didSelectGame game: OEDBGame, netplaySession: NetplaySession) {
+        // Netplay runs in the Mupen64Plus core; every player must use the same one
+        guard let mupen = OECorePlugin.corePlugin(bundleIdentifier: "org.openemu.Mupen64Plus") else {
+            NSSound.beep()
+            return
+        }
+        openGameDocument(with: game, core: mupen, saveState: nil, secondAttempt: false, netplaySession: netplaySession, disableAutoReload: true)
+    }
+
     func libraryController(_ controller: LibraryController, didSelectSaveState saveState: OEDBSaveState) {
         openGameDocument(with: nil, saveState: saveState)
     }
     
     @available(macOS, deprecated: 10.15, message: "Remove 'or \"User Reports\"' from alert (~line 392) and localizations, the term is not used in Catalina and above.")
-    private func openGameDocument(with game: OEDBGame?, core: OECorePlugin? = nil, saveState state: OEDBSaveState?, secondAttempt retry: Bool = false, lockOnROM: OEDBRom? = nil, disableAutoReload noAutoReload: Bool = false) {
+    private func openGameDocument(with game: OEDBGame?, core: OECorePlugin? = nil, saveState state: OEDBSaveState?, secondAttempt retry: Bool = false, lockOnROM: OEDBRom? = nil, netplaySession: NetplaySession? = nil, disableAutoReload noAutoReload: Bool = false) {
         
         guard let window = window else { return assertionFailure("MainWindow is nil") }
         
@@ -403,6 +412,8 @@ extension MainWindowController: LibraryControllerDelegate {
         
         if openWithSaveState {
             NSDocumentController.shared.openGameDocument(with: state!, display: openInSeparateWindow, fullScreen: fullScreen, completionHandler: openDocument)
+        } else if let core, let netplaySession {
+            NSDocumentController.shared.openGameDocument(with: game!, core: core, netplaySession: netplaySession, display: openInSeparateWindow, fullScreen: fullScreen, completionHandler: openDocument)
         } else if let core, let lockOnROM {
             NSDocumentController.shared.openGameDocument(with: game!, core: core, lockOnROM: lockOnROM, display: openInSeparateWindow, fullScreen: fullScreen, completionHandler: openDocument)
         } else if let core {
