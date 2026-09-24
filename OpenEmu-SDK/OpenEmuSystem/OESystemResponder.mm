@@ -31,6 +31,7 @@ extern "C" {
 #import "OEDeviceHandler.h"
 #import "OEHIDDeviceHandler.h"
 #import "OEBindingsController.h"
+#import "OEPlayerBindings.h"
 #import "OEHIDEvent_Internal.h"
 #import "OEKeyBindingDescription.h"
 #import "OEKeyBindingGroupDescription.h"
@@ -174,8 +175,18 @@ typedef struct OEPlayerRapidFireState {
             NSUInteger player = [note.userInfo[OEGameCoreRumblePlayerKey] unsignedIntegerValue];
             CGFloat strength = [note.userInfo[OEGameCoreRumbleStrengthKey] doubleValue];
 
+            /* Not deviceHandlerForPlayer:, which asserts when nobody is playing as that
+             * player (e.g. right after a controller disconnects) */
             OESystemBindings *bindings = [OEBindingsController.defaultBindingsController systemBindingsForSystemController:self.controller];
-            OEDeviceHandler *handler = [bindings deviceHandlerForPlayer:player];
+            OEDevicePlayerBindings *playerBindings = [bindings devicePlayerBindingsForPlayer:player];
+            // TEMP DIAGNOSTICS (rumble branch only)
+            NSLog(@"[DIAG rumble] player %lu strength %.2f; bindings for that player: number=%lu device=%@; P1=%@ P2=%@",
+                  (unsigned long)player, strength, (unsigned long)playerBindings.playerNumber,
+                  [playerBindings.deviceHandler class],
+                  [bindings devicePlayerBindingsForPlayer:1].deviceHandler.uniqueIdentifier,
+                  [bindings devicePlayerBindingsForPlayer:2].deviceHandler.uniqueIdentifier);
+            if (playerBindings == nil || playerBindings.playerNumber != player) return;
+            OEDeviceHandler *handler = playerBindings.deviceHandler;
             if ([handler isKindOfClass:OEHIDDeviceHandler.class])
                 [(OEHIDDeviceHandler *)handler forceFeedbackWithStrongIntensity:strength weakIntensity:strength];
         }];

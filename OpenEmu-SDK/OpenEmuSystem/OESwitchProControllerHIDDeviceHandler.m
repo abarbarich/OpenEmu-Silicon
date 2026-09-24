@@ -400,6 +400,8 @@ static CGFloat OEHACScaleValueWithCalibration(
             .y = {.min = 8192, .zero = 32768, .max = 57344},
         };
     
+    [self _setRumbleDataWithIntensity:0.0];
+    
     return self;
 }
 
@@ -444,6 +446,7 @@ static CGFloat OEHACScaleValueWithCalibration(
     
     [self _setReportMode:OEHACInputReportIDFullReport];
     [self _setPlayerLights:0x0F];
+    [self _sendRumbleReport];
     [self _requestCalibrationData];
     
     /* In BetterJoyForCemu there is a comment that says the controller wants to be
@@ -641,6 +644,23 @@ static CGFloat OEHACScaleValueWithCalibration(
 {
     CGFloat intensity = MAX(0.0, MIN(1.0, MAX(strongIntensity, weakIntensity)));
 
+    [self _setRumbleDataWithIntensity:intensity];
+    
+    [_rumbleTimer invalidate];
+    _rumbleTimer = nil;
+    [self _sendRumbleReport];
+
+    if (intensity > 0.0) {
+        __weak __auto_type weakSelf = self;
+        _rumbleTimer = [NSTimer scheduledTimerWithTimeInterval:RUMBLE_REFRESH_SECONDS repeats:YES block:^(NSTimer * _Nonnull timer) {
+            [weakSelf _sendRumbleReport];
+        }];
+    }
+}
+
+
+- (void)_setRumbleDataWithIntensity:(CGFloat)intensity
+{
     uint8_t motor[4];
     if (intensity <= 0.0) {
         if (_isN64Controller) {
@@ -666,17 +686,6 @@ static CGFloat OEHACScaleValueWithCalibration(
     }
     memcpy(&_rumbleData[0], motor, 4);
     memcpy(&_rumbleData[4], motor, 4);
-
-    [_rumbleTimer invalidate];
-    _rumbleTimer = nil;
-    [self _sendRumbleReport];
-
-    if (intensity > 0.0) {
-        __weak __auto_type weakSelf = self;
-        _rumbleTimer = [NSTimer scheduledTimerWithTimeInterval:RUMBLE_REFRESH_SECONDS repeats:YES block:^(NSTimer * _Nonnull timer) {
-            [weakSelf _sendRumbleReport];
-        }];
-    }
 }
 
 
@@ -776,6 +785,9 @@ static CGFloat OEHACScaleValueWithCalibration(
     report.seqNumber = _packetCounter;
     _packetCounter = (_packetCounter + 1) & 0xF;
     report.subcmdID = cmdid;
+    /* Every command also carries the rumble state, as with SDL. Sending zeros here
+     * would not stop a controller left vibrating by a game that crashed. */
+    memcpy(report.rumbleData, _rumbleData, sizeof(report.rumbleData));
     if (data)
         memcpy(report.subcmdParam, data, length);
     
@@ -811,6 +823,9 @@ static CGFloat OEHACScaleValueWithCalibration(
     report.seqNumber = _packetCounter;
     _packetCounter = (_packetCounter + 1) & 0xF;
     report.subcmdID = cmdid;
+    /* Every command also carries the rumble state, as with SDL. Sending zeros here
+     * would not stop a controller left vibrating by a game that crashed. */
+    memcpy(report.rumbleData, _rumbleData, sizeof(report.rumbleData));
     if (data)
         memcpy(report.subcmdParam, data, length);
     
