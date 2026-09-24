@@ -44,6 +44,10 @@
 
 NSString *const OEGameCoreErrorDomain = @"org.openemu.GameCore.ErrorDomain";
 
+NSNotificationName const OEGameCoreRumbleDidChangeNotification = @"OEGameCoreRumbleDidChangeNotification";
+NSString *const OEGameCoreRumblePlayerKey = @"OEGameCoreRumblePlayerKey";
+NSString *const OEGameCoreRumbleStrengthKey = @"OEGameCoreRumbleStrengthKey";
+
 @implementation OEGameCore
 {
     NSThread *_gameCoreThread;

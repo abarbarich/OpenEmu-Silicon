@@ -29,6 +29,9 @@ extern "C" {
 #import "NSResponder+OEHIDAdditions.h"
 #import "OEEvent.h"
 #import "OEDeviceHandler.h"
+#import "OESwitchProControllerHIDDeviceHandler.h"
+#import "OEBindingsController.h"
+#import "OEPlayerBindings.h"
 #import "OEHIDEvent_Internal.h"
 #import "OEKeyBindingDescription.h"
 #import "OEKeyBindingGroupDescription.h"
@@ -117,6 +120,7 @@ typedef struct OEPlayerRapidFireState {
     double _analogToDigitalThreshold;
     NSMutableDictionary<OEDeviceHandlerPlaceholder *, NSMutableArray<void (^)(void)>*>* _pendingDeviceHandlerBindings;
     id _token;
+    id _rumbleToken;
 }
 
 + (void)load
@@ -159,7 +163,31 @@ typedef struct OEPlayerRapidFireState {
             }
             [self->_pendingDeviceHandlerBindings removeObjectForKey:placeholder];
         }];
-        
+
+        /* Pass rumble from the game to whichever controller is playing as that player. */
+        _rumbleToken = [NSNotificationCenter.defaultCenter addObserverForName:OEGameCoreRumbleDidChangeNotification
+                                                                       object:nil
+                                                                        queue:NSOperationQueue.mainQueue
+                                                                   usingBlock:^(NSNotification * _Nonnull note) {
+            __auto_type self = weakSelf;
+            if (self == nil) return;
+
+            NSUInteger player = [note.userInfo[OEGameCoreRumblePlayerKey] unsignedIntegerValue];
+            CGFloat strength = [note.userInfo[OEGameCoreRumbleStrengthKey] doubleValue];
+
+            /* Not deviceHandlerForPlayer:, which asserts when nobody is playing as that
+             * player (e.g. right after a controller disconnects) */
+            OESystemBindings *bindings = [OEBindingsController.defaultBindingsController systemBindingsForSystemController:self.controller];
+            OEDevicePlayerBindings *playerBindings = [bindings devicePlayerBindingsForPlayer:player];
+            if (playerBindings == nil || playerBindings.playerNumber != player) return;
+
+            /* Only Switch controllers for now; other controllers would fall back to the
+             * generic macOS force feedback code, which hasn't been tested with games. */
+            OEDeviceHandler *handler = playerBindings.deviceHandler;
+            if ([handler isKindOfClass:OESwitchProControllerHIDDeviceHandler.class])
+                [(OESwitchProControllerHIDDeviceHandler *)handler forceFeedbackWithStrongIntensity:strength weakIntensity:strength];
+        }];
+
         /* Create the list of buttons that should not be affected by the rapid fire
          * toggle. Basically, we remove all directional buttons, by exploiting binding
          * groups to enumerate them. */

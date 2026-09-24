@@ -43,6 +43,10 @@
 #define MAX_RESPONSE_ATTEMPTS (10)
 #define MAX_RESPONSE_WAIT_SECONDS (10.0)
 #define PING_INTERVAL_SECONDS (60.0)
+/* The controller stops vibrating unless the rumble state is resent regularly (SDL uses 50 ms) */
+#define RUMBLE_REFRESH_SECONDS (0.05)
+#define RUMBLE_REPORT_LENGTH_BLUETOOTH (49)
+#define RUMBLE_REPORT_LENGTH_USB (64)
 
 #define NINTENDO_VENDOR_ID (0x57E)
 #define PRO_CONTROLLER_PRODUCT_ID (0x2009)
@@ -337,6 +341,10 @@ static CGFloat OEHACScaleValueWithCalibration(
     /* The Nintendo Switch Online N64 controller speaks the same protocol as
      * the Pro Controller, with the same button bits, but has no right stick. */
     BOOL _isN64Controller;
+
+    /* HD Rumble data for both motors (4 bytes each), and the timer that resends it */
+    uint8_t _rumbleData[8];
+    NSTimer *_rumbleTimer;
 }
 
 
@@ -387,6 +395,8 @@ static CGFloat OEHACScaleValueWithCalibration(
             .y = {.min = 8192, .zero = 32768, .max = 57344},
         };
     
+    [self _setRumbleDataWithIntensity:0.0];
+    
     return self;
 }
 
@@ -431,6 +441,7 @@ static CGFloat OEHACScaleValueWithCalibration(
     
     [self _setReportMode:OEHACInputReportIDFullReport];
     [self _setPlayerLights:0x0F];
+    [self _sendRumbleReport];
     [self _requestCalibrationData];
     
     /* In BetterJoyForCemu there is a comment that says the controller wants to be
@@ -451,6 +462,8 @@ static CGFloat OEHACScaleValueWithCalibration(
     [super disconnect];
     
     [_pingTimer invalidate];
+    [_rumbleTimer invalidate];
+    _rumbleTimer = nil;
     
     /* we don't want to disconnect the controller every time the helper
      * app terminates, just when OpenEmu closes */
@@ -610,6 +623,76 @@ static CGFloat OEHACScaleValueWithCalibration(
 }
 
 
+#pragma mark - Rumble
+
+
+/* Called on the main thread. Switch controllers use "HD Rumble": each motor takes a
+ * frequency and an amplitude. Encoding follows SDL's Switch driver and
+ * https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/rumble_data_table.md */
+- (void)forceFeedbackWithStrongIntensity:(CGFloat)strongIntensity weakIntensity:(CGFloat)weakIntensity
+{
+    CGFloat intensity = MAX(0.0, MIN(1.0, MAX(strongIntensity, weakIntensity)));
+
+    [self _setRumbleDataWithIntensity:intensity];
+    
+    [_rumbleTimer invalidate];
+    _rumbleTimer = nil;
+    [self _sendRumbleReport];
+
+    if (intensity > 0.0) {
+        __weak __auto_type weakSelf = self;
+        _rumbleTimer = [NSTimer scheduledTimerWithTimeInterval:RUMBLE_REFRESH_SECONDS repeats:YES block:^(NSTimer * _Nonnull timer) {
+            [weakSelf _sendRumbleReport];
+        }];
+    }
+}
+
+
+- (void)_setRumbleDataWithIntensity:(CGFloat)intensity
+{
+    uint8_t motor[4];
+    if (intensity <= 0.0) {
+        if (_isN64Controller) {
+            /* SDL: N64-style pads buzz with the standard "neutral" value, so use zero amplitude */
+            const uint8_t off[4] = {0x00, 0x00, 0x01, 0x40};
+            memcpy(motor, off, 4);
+        } else {
+            const uint8_t off[4] = {0x00, 0x01, 0x40, 0x40};
+            memcpy(motor, off, 4);
+        }
+    } else {
+        /* Row 1-100 of Nintendo's amplitude table; the high and low amplitude values follow
+         * a simple pattern along the rows (0x02, 0x04 … 0xC8 and 0x8040, 0x0041 … 0x0072) */
+        NSInteger row = MAX(1, lround(intensity * 100));
+        const uint16_t highFrequency = 0x0074;
+        const uint8_t lowFrequency = 0x3D;
+        const uint8_t highAmplitude = (uint8_t)(row * 2);
+        const uint16_t lowAmplitude = ((row & 1) ? 0x8000 : 0) | (0x40 + row / 2);
+        motor[0] = highFrequency & 0xFF;
+        motor[1] = highAmplitude | ((highFrequency >> 8) & 0x01);
+        motor[2] = lowFrequency | ((lowAmplitude >> 8) & 0x80);
+        motor[3] = lowAmplitude & 0xFF;
+    }
+    memcpy(&_rumbleData[0], motor, 4);
+    memcpy(&_rumbleData[4], motor, 4);
+}
+
+
+- (void)_sendRumbleReport
+{
+    uint8_t report[RUMBLE_REPORT_LENGTH_USB] = {0};
+    report[0] = OEHACOutputReportIDRumble;
+    report[1] = _packetCounter;
+    _packetCounter = (_packetCounter + 1) & 0xF;
+    memcpy(&report[2], _rumbleData, sizeof(_rumbleData));
+
+    CFIndex length = _isUSB ? RUMBLE_REPORT_LENGTH_USB : RUMBLE_REPORT_LENGTH_BLUETOOTH;
+    IOReturn ret = IOHIDDeviceSetReport([self device], kIOHIDReportTypeOutput, report[0], report, length);
+    if (ret != kIOReturnSuccess)
+        NSLog(@"[dev %p] Could not send rumble, error: %x", self, ret);
+}
+
+
 #pragma mark - Controller-Specific functionality
 
 
@@ -691,6 +774,9 @@ static CGFloat OEHACScaleValueWithCalibration(
     report.seqNumber = _packetCounter;
     _packetCounter = (_packetCounter + 1) & 0xF;
     report.subcmdID = cmdid;
+    /* Every command also carries the rumble state, as with SDL. Sending zeros here
+     * would not stop a controller left vibrating by a game that crashed. */
+    memcpy(report.rumbleData, _rumbleData, sizeof(report.rumbleData));
     if (data)
         memcpy(report.subcmdParam, data, length);
     
@@ -726,6 +812,9 @@ static CGFloat OEHACScaleValueWithCalibration(
     report.seqNumber = _packetCounter;
     _packetCounter = (_packetCounter + 1) & 0xF;
     report.subcmdID = cmdid;
+    /* Every command also carries the rumble state, as with SDL. Sending zeros here
+     * would not stop a controller left vibrating by a game that crashed. */
+    memcpy(report.rumbleData, _rumbleData, sizeof(report.rumbleData));
     if (data)
         memcpy(report.subcmdParam, data, length);
     

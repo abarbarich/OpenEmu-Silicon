@@ -3008,6 +3008,9 @@ extension OEGameDocument: OESystemBindingsObserver {
     }
     
     func gameCoreDidTerminate() {
+        // The game couldn't stop rumble itself, so don't leave a controller vibrating
+        OEDeviceManager.shared.stopAllRumble()
+
         if !(emulationStatus == .starting || emulationStatus == .paused) {
             return
         }

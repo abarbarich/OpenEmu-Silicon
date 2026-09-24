@@ -97,6 +97,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 extern NSString *const OEGameCoreErrorDomain;
 
+/// Posted by a core, on any thread, when a player's rumble strength changes.
+/// The object is the core. userInfo holds OEGameCoreRumblePlayerKey (NSNumber, player
+/// number starting at 1) and OEGameCoreRumbleStrengthKey (NSNumber, 0.0 = off to 1.0 = full).
+extern NSNotificationName const OEGameCoreRumbleDidChangeNotification;
+extern NSString *const OEGameCoreRumblePlayerKey;
+extern NSString *const OEGameCoreRumbleStrengthKey;
+
 typedef NS_ERROR_ENUM(OEGameCoreErrorDomain, OEGameCoreErrorCodes) {
     OEGameCoreCouldNotStartCoreError = -1,
     OEGameCoreCouldNotLoadROMError   = -2,

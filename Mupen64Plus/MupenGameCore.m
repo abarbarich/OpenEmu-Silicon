@@ -72,6 +72,14 @@ NSString *MupenControlNames[] = {
     uint8_t _padData[4][OEN64ButtonCount];
     int8_t _xAxis[4];
     int8_t _yAxis[4];
+    // Whether the loaded game supports the Rumble Pak, from Mupen64Plus' ROM database
+    BOOL _romSupportsRumblePak;
+    // Last rumble state sent for each player; games rewrite it every frame
+    BOOL _rumbleOn[4];
+    // Pak inserted in players 1-3 (PLUGIN_MEMPAK or PLUGIN_RUMBLE_PAK), chosen in the
+    // in-game "Controller Pak" menu. A change is applied on the emulation thread.
+    int _controllerPak;
+    volatile BOOL _controllerPakChangePending;
     NSUInteger _frameCounter;
     double _sampleRate;
     BOOL _initializing;
@@ -89,6 +97,7 @@ NSString *MupenControlNames[] = {
 }
 
 - (void)OE_didReceiveStateChangeForParamType:(m64p_core_param)paramType value:(int)newValue;
+- (void)OE_setRumble:(BOOL)on forPlayerIndex:(int)index;
 - (void)_beginLoadGame;
 - (void)_postRetroAchievementsSessionSnapshot;
 
@@ -421,6 +430,21 @@ static void MupenGetKeys(int Control, BUTTONS *Keys)
 {
     GET_CURRENT_OR_RETURN();
 
+    // Swap paks here, on the emulation thread, like pulling one out of a real controller
+    if (current->_controllerPakChangePending) {
+        current->_controllerPakChangePending = NO;
+        for (int i = 0; i < 3; i++) {
+            Controls[i].Plugin = current->_controllerPak;
+            main_switch_plugin_pak(i);
+        }
+        if (current->_controllerPak != PLUGIN_RUMBLE_PAK) {
+            for (int i = 0; i < 4; i++) {
+                if (current->_rumbleOn[i])
+                    [current OE_setRumble:NO forPlayerIndex:i];
+            }
+        }
+    }
+
     Keys->R_DPAD = current->_padData[Control][OEN64ButtonDPadRight];
     Keys->L_DPAD = current->_padData[Control][OEN64ButtonDPadLeft];
     Keys->D_DPAD = current->_padData[Control][OEN64ButtonDPadDown];
@@ -441,14 +465,45 @@ static void MupenGetKeys(int Control, BUTTONS *Keys)
 
 static void MupenInitiateControllers (CONTROL_INFO ControlInfo)
 {
+    __strong MupenGameCore *current = _current;
+
+    int pak = PLUGIN_MEMPAK;
+    if (current != nil && current->_controllerPak == PLUGIN_RUMBLE_PAK)
+        pak = PLUGIN_RUMBLE_PAK;
+
     ControlInfo.Controls[0].Present = 1;
-    ControlInfo.Controls[0].Plugin = PLUGIN_MEMPAK;
+    ControlInfo.Controls[0].Plugin = pak;
     ControlInfo.Controls[1].Present = 1;
-    ControlInfo.Controls[1].Plugin = PLUGIN_MEMPAK;
+    ControlInfo.Controls[1].Plugin = pak;
     ControlInfo.Controls[2].Present = 1;
-    ControlInfo.Controls[2].Plugin = PLUGIN_MEMPAK;
+    ControlInfo.Controls[2].Plugin = pak;
     ControlInfo.Controls[3].Present = 1;
     ControlInfo.Controls[3].Plugin = PLUGIN_NONE;
+}
+
+/* Mupen64Plus calls this when the game writes to a pak. With a Rumble Pak inserted,
+ * turning rumble on or off arrives as a pak write to address 0xC000, with the data
+ * bytes set to 0x01 (on) or 0x00 (off). */
+static void MupenControllerCommand(int Control, unsigned char *Command)
+{
+    if (Command == NULL)
+        return;
+
+    const unsigned char JoybusPakWrite = 0x03;
+    unsigned int address = ((Command[3] << 8) | Command[4]) & 0xFFE0;
+    if (Command[2] != JoybusPakWrite || address != 0xC000)
+        return;
+
+    GET_CURRENT_OR_RETURN();
+    if (Control < 0 || Control >= 4)
+        return;
+
+    // Games rewrite the rumble state every frame; only pass on changes
+    BOOL rumbleOn = Command[5] != 0;
+    if (current->_rumbleOn[Control] == rumbleOn)
+        return;
+
+    [current OE_setRumble:rumbleOn forPlayerIndex:Control];
 }
 
 static AUDIO_INFO AudioInfo;
@@ -560,6 +615,18 @@ static void MupenSetAudioSpeed(int percent)
     if (CoreDoCommand(M64CMD_ROM_OPEN, (int)romData.length, (void *)romData.bytes) != M64ERR_SUCCESS)
         return NO;
 
+    m64p_rom_settings romSettings = {0};
+    if (CoreDoCommand(M64CMD_ROM_GET_SETTINGS, sizeof(romSettings), &romSettings) == M64ERR_SUCCESS) {
+        _romSupportsRumblePak = romSettings.rumble != 0;
+    }
+    /* Games that support rumble get a Rumble Pak unless the player chose the Memory Pak
+     * in the Controller Pak menu for this game. */
+    NSString *savedPak = self.displayModeInfo[@"controllerPak"];
+    if (_romSupportsRumblePak && ![savedPak isEqual:@"Memory Pak"])
+        _controllerPak = PLUGIN_RUMBLE_PAK;
+    else
+        _controllerPak = PLUGIN_MEMPAK;
+
     // RetroAchievements: create rc_client and observe the OE token. Game identification
     // happens in the login callback so we never miss the token notification that fires
     // immediately after setRetroAchievementsToken.
@@ -649,6 +716,7 @@ static void MupenSetAudioSpeed(int percent)
     // Load Input
     input.getKeys = MupenGetKeys;
     input.initiateControllers = MupenInitiateControllers;
+    input.controllerCommand = MupenControllerCommand;
     plugin_start(M64PLUGIN_INPUT);
 
     // Load RSP
@@ -719,8 +787,67 @@ static void MupenSetAudioSpeed(int percent)
     _frameCounter ++;
 }
 
+#pragma mark - Controller Pak menu
+
+/* In-game menu to choose which pak is plugged into the controllers. OpenEmu remembers
+ * the choice per game in displayModeInfo[@"controllerPak"]. */
+- (NSArray<NSDictionary<NSString *, id> *> *)displayModes
+{
+    // Games without rumble support only ever get the Memory Pak, so there is nothing to choose
+    if (!_romSupportsRumblePak)
+        return nil;
+
+    BOOL rumble = (_controllerPak == PLUGIN_RUMBLE_PAK);
+    return @[
+        @{ OEGameCoreDisplayModeLabelKey : @"Controller Pak" },
+        @{ OEGameCoreDisplayModeNameKey : @"Rumble Pak",
+           OEGameCoreDisplayModePrefKeyNameKey : @"controllerPak",
+           OEGameCoreDisplayModeStateKey : @(rumble) },
+        @{ OEGameCoreDisplayModeNameKey : @"Memory Pak",
+           OEGameCoreDisplayModePrefKeyNameKey : @"controllerPak",
+           OEGameCoreDisplayModeStateKey : @(!rumble) },
+    ];
+}
+
+- (void)changeDisplayWithMode:(NSString *)displayMode
+{
+    int pak;
+    if ([displayMode isEqualToString:@"Rumble Pak"])
+        pak = PLUGIN_RUMBLE_PAK;
+    else if ([displayMode isEqualToString:@"Memory Pak"])
+        pak = PLUGIN_MEMPAK;
+    else
+        return;
+
+    if (pak == _controllerPak)
+        return;
+
+    _controllerPak = pak;
+    _controllerPakChangePending = YES;
+}
+
+#pragma mark - Rumble
+
+- (void)OE_setRumble:(BOOL)on forPlayerIndex:(int)index
+{
+    _rumbleOn[index] = on;
+    /* Same values as OEGameCoreRumbleDidChangeNotification and its keys in OpenEmuBase,
+     * written out so this core still loads in OpenEmu versions without rumble support
+     * (cores are released separately from the app). */
+    [NSNotificationCenter.defaultCenter postNotificationName:@"OEGameCoreRumbleDidChangeNotification"
+                                                      object:self
+                                                    userInfo:@{ @"OEGameCoreRumblePlayerKey": @(index + 1),
+                                                                @"OEGameCoreRumbleStrengthKey": @(on ? 1.0 : 0.0) }];
+}
+
 - (void)stopEmulation
 {
+    // Don't leave a controller buzzing after the game closes
+    for (int i = 0; i < 4; i++) {
+        if (_rumbleOn[i])
+            [self OE_setRumble:NO forPlayerIndex:i];
+    }
+
     if (_raTokenObserver) {
         [[NSNotificationCenter defaultCenter] removeObserver:_raTokenObserver];
         _raTokenObserver = nil;
