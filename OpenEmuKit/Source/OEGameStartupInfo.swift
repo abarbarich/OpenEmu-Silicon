@@ -38,13 +38,18 @@ import Foundation
     public let systemPluginURL: URL
     public let lockOnRomURL: URL?
     public let lockOnUpmemURL: URL?
+    /// Netplay room to join before the game starts; nil when not playing online.
+    public let netplayHost: String?
+    public let netplayPort: Int
+    public let netplayPlayer: Int
     
     public init(romURL: URL, romMD5: String, romHeader: String, romSerial: String,
                 systemRegion: String,
                 displayModeInfo: [String: Any]?,
                 shaderURL: URL, shaderParameters: [String: Double],
                 corePluginURL: URL, systemPluginURL: URL,
-                lockOnRomURL: URL? = nil, lockOnUpmemURL: URL? = nil) {
+                lockOnRomURL: URL? = nil, lockOnUpmemURL: URL? = nil,
+                netplayHost: String? = nil, netplayPort: Int = 0, netplayPlayer: Int = 0) {
         self.romURL = romURL
         self.romMD5 = romMD5
         self.romHeader = romHeader
@@ -57,6 +62,9 @@ import Foundation
         self.systemPluginURL = systemPluginURL
         self.lockOnRomURL = lockOnRomURL
         self.lockOnUpmemURL = lockOnUpmemURL
+        self.netplayHost = netplayHost
+        self.netplayPort = netplayPort
+        self.netplayPlayer = netplayPlayer
     }
     
     // MARK: - NSSecureCoding
@@ -90,6 +98,9 @@ import Foundation
         self.systemPluginURL = systemPluginURL
         self.lockOnRomURL = coder.decodeObject(of: NSURL.self, forKey: CodingKeys.lockOnRomURL.rawValue) as? URL
         self.lockOnUpmemURL = coder.decodeObject(of: NSURL.self, forKey: CodingKeys.lockOnUpmemURL.rawValue) as? URL
+        self.netplayHost = coder.decodeObject(of: NSString.self, forKey: CodingKeys.netplayHost.rawValue) as? String
+        self.netplayPort = coder.decodeInteger(forKey: CodingKeys.netplayPort.rawValue)
+        self.netplayPlayer = coder.decodeInteger(forKey: CodingKeys.netplayPlayer.rawValue)
     }
     
     public func encode(with coder: NSCoder) {
@@ -105,6 +116,9 @@ import Foundation
         coder.encode(systemPluginURL, forKey: CodingKeys.systemPluginURL.rawValue)
         coder.encode(lockOnRomURL, forKey: CodingKeys.lockOnRomURL.rawValue)
         coder.encode(lockOnUpmemURL, forKey: CodingKeys.lockOnUpmemURL.rawValue)
+        coder.encode(netplayHost, forKey: CodingKeys.netplayHost.rawValue)
+        coder.encode(netplayPort, forKey: CodingKeys.netplayPort.rawValue)
+        coder.encode(netplayPlayer, forKey: CodingKeys.netplayPlayer.rawValue)
     }
     
     private enum CodingKeys: String {
@@ -113,5 +127,6 @@ import Foundation
         case shaderURL, shaderParameters
         case corePluginURL, systemPluginURL
         case lockOnRomURL, lockOnUpmemURL
+        case netplayHost, netplayPort, netplayPlayer
     }
 }

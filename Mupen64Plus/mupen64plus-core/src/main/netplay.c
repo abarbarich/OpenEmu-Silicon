@@ -53,6 +53,7 @@ static uint8_t l_player_lag[4];
 #define UDP_SEND_KEY_INFO 0
 #define UDP_RECEIVE_KEY_INFO 1
 #define UDP_REQUEST_KEY_INFO 2
+#define UDP_RECEIVE_KEY_INFO_GRATUITOUS 3
 #define UDP_SYNC_DATA 4
 
 //TCP packet formats
@@ -243,11 +244,13 @@ static void netplay_process()
         switch (packet->data[0])
         {
             case UDP_RECEIVE_KEY_INFO:
+            case UDP_RECEIVE_KEY_INFO_GRATUITOUS: // from upstream: inputs the server sends before we ask
                 player = packet->data[1];
                 //current_status is a status update from the server
                 //it will let us know if another player has disconnected, or the games have desynced
                 current_status = packet->data[2];
-                l_player_lag[player] = packet->data[3];
+                if (packet->data[0] == UDP_RECEIVE_KEY_INFO)
+                    l_player_lag[player] = packet->data[3];
                 if (current_status != l_status)
                 {
                     if (((current_status & 0x1) ^ (l_status & 0x1)) != 0)
@@ -390,6 +393,28 @@ static void netplay_send_input(uint8_t control_id, uint32_t keys)
     SDLNet_FreePacket(packet);
 }
 
+/* OpenEmu: read exactly size bytes from the server. SDLNet_TCP_Recv returns <= 0 when the server
+ * disconnects or stops answering (the socket has a receive timeout); the upstream loops added that
+ * to their byte count and spun forever. On failure the buffer is zeroed and the connection is
+ * marked lost, so the next input request stops the game with "lost connection to server". */
+static int netplay_tcp_recv_all(void* data, size_t size)
+{
+    size_t received = 0;
+    while (received < size)
+    {
+        int result = SDLNet_TCP_Recv(l_tcpSocket, (char*)data + received, (int)(size - received));
+        if (result <= 0)
+        {
+            DebugMessage(M64MSG_ERROR, "Netplay: lost connection to server");
+            memset(data, 0, size);
+            l_udpChannel = -1;
+            return 0;
+        }
+        received += (size_t)result;
+    }
+    return 1;
+}
+
 uint8_t netplay_register_player(uint8_t player, uint8_t plugin, uint8_t rawdata, uint32_t reg_id)
 {
     l_reg_id = reg_id;
@@ -403,9 +428,8 @@ uint8_t netplay_register_player(uint8_t player, uint8_t plugin, uint8_t rawdata,
     SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 8);
 
     uint8_t response[2];
-    size_t recv = 0;
-    while (recv < 2)
-        recv += SDLNet_TCP_Recv(l_tcpSocket, &response[recv], 2 - recv);
+    if (!netplay_tcp_recv_all(response, 2))
+        return 0;
     l_buffer_target = response[1]; //local buffer size target
     return response[0];
 }
@@ -477,10 +501,8 @@ file_status_t netplay_read_storage(const char *filename, void *data, size_t size
         buffer_pos += strlen(short_filename) + 1;
 
         SDLNet_TCP_Send(l_tcpSocket, &output_data[0], buffer_pos);
-        size_t recv = 0;
         char *data_array = data;
-        while (recv < size)
-            recv += SDLNet_TCP_Recv(l_tcpSocket, data_array + recv, size - recv);
+        netplay_tcp_recv_all(data_array, size);
 
         int sum = 0;
         for (int i = 0; i < size; ++i)
@@ -500,7 +522,9 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *disable_extra_mem, 
     if (!netplay_is_init())
         return;
 
-    char output_data[21];
+    /* OpenEmu: the netplay server (like upstream Mupen64Plus) exchanges 24 bytes of settings;
+     * this older core only has 20 bytes' worth, so the last 4 are padding. */
+    char output_data[25] = {0};
     uint8_t request;
     if (l_netplay_control[0] != -1) //player 1 is the source of truth for settings
     {
@@ -511,16 +535,14 @@ void netplay_sync_settings(uint32_t *count_per_op, uint32_t *disable_extra_mem, 
         SDLNet_Write32(*si_dma_duration, &output_data[9]);
         SDLNet_Write32(*emumode, &output_data[13]);
         SDLNet_Write32(*no_compiled_jump, &output_data[17]);
-        SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 21);
+        SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 25);
     }
     else
     {
         request = TCP_RECEIVE_SETTINGS;
         memcpy(&output_data[0], &request, 1);
         SDLNet_TCP_Send(l_tcpSocket, &output_data[0], 1);
-        int32_t recv = 0;
-        while (recv < 20)
-            recv += SDLNet_TCP_Recv(l_tcpSocket, &output_data[recv], 20 - recv);
+        netplay_tcp_recv_all(output_data, 24);
         *count_per_op = SDLNet_Read32(&output_data[0]);
         *disable_extra_mem = SDLNet_Read32(&output_data[4]);
         *si_dma_duration = SDLNet_Read32(&output_data[8]);
@@ -569,9 +591,7 @@ void netplay_read_registration(struct controller_input_compat* cin_compats)
     char output_data = TCP_GET_REGISTRATION;
     char input_data[24];
     SDLNet_TCP_Send(l_tcpSocket, &output_data, 1);
-    size_t recv = 0;
-    while (recv < 24)
-        recv += SDLNet_TCP_Recv(l_tcpSocket, &input_data[recv], 24 - recv);
+    netplay_tcp_recv_all(input_data, 24);
     uint32_t curr = 0;
     for (int i = 0; i < 4; ++i)
     {
@@ -683,14 +703,7 @@ m64p_error netplay_receive_config(char* data, int size)
 
     if (l_netplay_control[0] == -1) //Only P2-4 receive settings
     {
-        int recv = 0;
-        while (recv < size)
-        {
-            recv += SDLNet_TCP_Recv(l_tcpSocket, &data[recv], size - recv);
-            if (recv < 1)
-                return M64ERR_SYSTEM_FAIL;
-        }
-        return M64ERR_SUCCESS;
+        return netplay_tcp_recv_all(data, (size_t)size) ? M64ERR_SUCCESS : M64ERR_SYSTEM_FAIL;
     }
     else
         return M64ERR_INVALID_STATE;

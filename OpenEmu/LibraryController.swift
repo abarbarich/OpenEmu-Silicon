@@ -55,6 +55,9 @@ final class LibraryController: NSTabViewController, NSMenuItemValidation {
     override var nibName: NSNib.Name? { "LibraryController" }
     
     @objc weak var delegate: LibraryControllerDelegate?
+
+    /// The Host/Join Netplay sheet while it's open.
+    private var netplayLobbyController: NetplayLobbyWindowController?
     lazy var toolbar: LibraryToolbar = {
         let toolbar = LibraryToolbar(identifier: "OELibraryToolbar")
         toolbar.delegate = toolbarDelegate
@@ -452,6 +455,38 @@ final class LibraryController: NSTabViewController, NSMenuItemValidation {
         delegate?.libraryController?(self, didSelectGame: game, lockedOnTo: lockOnGame)
     }
     
+    @objc(hostNetplayWithSelectedGame:)
+    @IBAction func hostNetplayWithSelectedGame(_ sender: Any?) {
+        beginNetplay(.host)
+    }
+
+    @objc(joinNetplayWithSelectedGame:)
+    @IBAction func joinNetplayWithSelectedGame(_ sender: Any?) {
+        beginNetplay(.join)
+    }
+
+    private func beginNetplay(_ mode: NetplayLobbyWindowController.Mode) {
+        guard
+            netplayLobbyController == nil,
+            let ctl = tabView.selectedTabViewItem?.viewController as? LibrarySubviewControllerGameSelection,
+            let game = ctl.selectedGames.first,
+            let md5 = game.defaultROM?.md5Hash,
+            let window = view.window
+        else {
+            NSSound.beep()
+            return
+        }
+        let lobby = NetplayLobbyWindowController(mode: mode, gameTitle: game.displayName, romMD5: md5)
+        netplayLobbyController = lobby
+        lobby.beginSheet(on: window) { [weak self] session in
+            guard let self else { return }
+            self.netplayLobbyController = nil
+            if let session {
+                self.delegate?.libraryController?(self, didSelectGame: game, netplaySession: session)
+            }
+        }
+    }
+
     @objc(startSelectedGameWithSaveState:)
     @IBAction func startSelectedGame(saveState sender: NSMenuItem) {
         guard let saveState = sender.representedObject as? OEDBSaveState else {
@@ -492,6 +527,7 @@ protocol LibraryControllerDelegate {
     @objc optional func libraryController(_ controller: LibraryController, didSelectGame: OEDBGame)
     @objc optional func libraryController(_ controller: LibraryController, didSelectGame: OEDBGame, withCore: OECorePlugin)
     @objc optional func libraryController(_ controller: LibraryController, didSelectGame: OEDBGame, lockedOnTo: OEDBGame)
+    @objc optional func libraryController(_ controller: LibraryController, didSelectGame: OEDBGame, netplaySession: NetplaySession)
     @objc optional func libraryController(_ controller: LibraryController, didSelectRom: OEDBRom)
     @objc optional func libraryController(_ controller: LibraryController, didSelectSaveState: OEDBSaveState)
 }

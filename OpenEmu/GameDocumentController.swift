@@ -219,6 +219,20 @@ class GameDocumentController: NSDocumentController {
         }
     }
 
+    override func openGameDocument(with game: OEDBGame, core: OECorePlugin, netplaySession: NetplaySession, display displayDocument: Bool, fullScreen: Bool, completionHandler: @escaping (OEGameDocument?, Error?) -> Void) {
+        // The same game already open offline (or in another room) can't join this room too
+        if gameDocuments.contains(where: { $0.rom?.game == game }) {
+            completionHandler(nil, OEGameDocument.Errors.netplayGameAlreadyOpen)
+            return
+        }
+        do {
+            let document = try OEGameDocument(game: game, core: core, netplaySession: netplaySession)
+            setUpGameDocument(document, display: displayDocument, fullScreen: fullScreen, completionHandler: completionHandler)
+        } catch {
+            completionHandler(nil, error)
+        }
+    }
+
     override func openGameDocument(with rom: OEDBRom, display displayDocument: Bool, fullScreen: Bool, completionHandler: @escaping (OEGameDocument?, Error?) -> Void) {
         // Bring an already-running document for this rom to front rather than opening a second copy.
         if let existing = gameDocuments.first(where: { $0.rom == rom }) {

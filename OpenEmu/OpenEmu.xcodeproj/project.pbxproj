@@ -378,6 +378,7 @@
 		8F419A3C25B6C81600A7F0BE /* PrefDebugController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83753F1614F537C400D708A7 /* PrefDebugController.swift */; };
 		8F44DEB526DFD07200893A18 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 8F44DEB426DFD07200893A18 /* Sparkle */; };
 		8F49E25A2A1A9A6500365A9B /* ImportFailureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F49E2592A1A9A6500365A9B /* ImportFailureTests.swift */; };
+		885252B59C43D2BBBE125540 /* NetplayLobbyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3EE730F51B3C280E82AC2C /* NetplayLobbyTests.swift */; };
 		8F4A69732547F84500DFE092 /* GameControlsBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F4A69722547F84500DFE092 /* GameControlsBarView.swift */; };
 		8F4AEAC1273594E6005C6246 /* OpenVGDB.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F4AEAC0273594E6005C6246 /* OpenVGDB.swift */; };
 		8F4BDF7B1CE4AB25007DCB86 /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 8F4BDF7A1CE4AB25007DCB86 /* libz.tbd */; };
@@ -671,6 +672,8 @@
 		E66ED795617D681F41CFA7BD /* MSX.oesystemplugin in Copy System Plugins to App Plugins */ = {isa = PBXBuildFile; fileRef = FEB6625B187B791800D14713 /* MSX.oesystemplugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E8D9112BFB38FBCEEA8B22DD /* CheatSearchWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2D0AB7012BE11642E384A3 /* CheatSearchWindowController.swift */; };
 		E8D9112BFB38FBCEEA8B22DE /* BrowseOnlineCheatsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2D0AB7012BE11642E384A4 /* BrowseOnlineCheatsWindowController.swift */; };
+		87C950BD092A106979E8AF05 /* NetplayLobbyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086ADA46740314E69ED554A8 /* NetplayLobbyClient.swift */; };
+		28A3CD63ED1C358C52A394F2 /* NetplayLobbyWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 349ACF79F48E55F319C8AD11 /* NetplayLobbyWindowController.swift */; };
 		E8D9112BFB38FBCEEA8B22DF /* BrowseOnlineCheatsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2D0AB7012BE11642E384A5 /* BrowseOnlineCheatsViewController.swift */; };
 		EB3D03D02A24B3C100EBABCD /* 3DO.oesystemplugin in Copy System Plugins to App Plugins */ = {isa = PBXBuildFile; fileRef = 943F99B31707DF3700270E89 /* 3DO.oesystemplugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF2FDBEB14CFFE06002A64F2 /* ControlsKeyButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8396CC5514068DA90096F791 /* ControlsKeyButton.swift */; };
@@ -1523,6 +1526,7 @@
 		8F4198AF25B68B7500A7F0BE /* OELibraryDatabase+Maintenance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OELibraryDatabase+Maintenance.swift"; sourceTree = "<group>"; };
 		8F419A0225B6C7AE00A7F0BE /* OEAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OEAppearance.swift; sourceTree = "<group>"; };
 		8F49E2592A1A9A6500365A9B /* ImportFailureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportFailureTests.swift; sourceTree = "<group>"; };
+		2B3EE730F51B3C280E82AC2C /* NetplayLobbyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetplayLobbyTests.swift; sourceTree = "<group>"; };
 		8F4A69722547F84500DFE092 /* GameControlsBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameControlsBarView.swift; sourceTree = "<group>"; };
 		8F4AEAC0273594E6005C6246 /* OpenVGDB.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenVGDB.swift; sourceTree = "<group>"; };
 		8F4BDF7A1CE4AB25007DCB86 /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };
@@ -1918,6 +1922,8 @@
 		DBFF44DD2E9D79D400B30F0A /* OEFDSSystemResponderClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OEFDSSystemResponderClient.h; sourceTree = "<group>"; };
 		ED2D0AB7012BE11642E384A3 /* CheatSearchWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CheatSearchWindowController.swift; sourceTree = "<group>"; };
 		ED2D0AB7012BE11642E384A4 /* BrowseOnlineCheatsWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowseOnlineCheatsWindowController.swift; sourceTree = "<group>"; };
+		086ADA46740314E69ED554A8 /* NetplayLobbyClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetplayLobbyClient.swift; sourceTree = "<group>"; };
+		349ACF79F48E55F319C8AD11 /* NetplayLobbyWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NetplayLobbyWindowController.swift; sourceTree = "<group>"; };
 		ED2D0AB7012BE11642E384A5 /* BrowseOnlineCheatsViewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowseOnlineCheatsViewController.swift; sourceTree = "<group>"; };
 		EFBD5D7714EFE19A00FBD1E0 /* NSColor+OEAdditions.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "NSColor+OEAdditions.swift"; sourceTree = "<group>"; };
 		EFBD5D7B14EFE26300FBD1E0 /* OEGridView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = OEGridView.h; sourceTree = "<group>"; };
@@ -2517,6 +2523,7 @@
 				8F0C1C242A09E01A00343B6C /* BundleResourcesTests.swift */,
 				8F93FDD927374F2000B59F3E /* GameInfoHelperTests.swift */,
 				8F49E2592A1A9A6500365A9B /* ImportFailureTests.swift */,
+				2B3EE730F51B3C280E82AC2C /* NetplayLobbyTests.swift */,
 				8F93FDDF2737506900B59F3E /* ROMImporterTests.swift */,
 				8F93FDD827374F1F00B59F3E /* OpenEmuTests-Bridging-Header.h */,
 			);
@@ -4072,6 +4079,8 @@
 				ED2D0AB7012BE11642E384A3 /* CheatSearchWindowController.swift */,
 				8045ABD4E2FC2F0F03CEECB4 /* CheatSearchViewController.swift */,
 				ED2D0AB7012BE11642E384A4 /* BrowseOnlineCheatsWindowController.swift */,
+				086ADA46740314E69ED554A8 /* NetplayLobbyClient.swift */,
+				349ACF79F48E55F319C8AD11 /* NetplayLobbyWindowController.swift */,
 				ED2D0AB7012BE11642E384A5 /* BrowseOnlineCheatsViewController.swift */,
 			);
 			name = OpenEmu;
@@ -6108,6 +6117,7 @@
 			files = (
 				8F93FDE02737506900B59F3E /* ROMImporterTests.swift in Sources */,
 				8F49E25A2A1A9A6500365A9B /* ImportFailureTests.swift in Sources */,
+				885252B59C43D2BBBE125540 /* NetplayLobbyTests.swift in Sources */,
 				8F93FDDA27374F2000B59F3E /* GameInfoHelperTests.swift in Sources */,
 				8F0C1C252A09E01A00343B6C /* BundleResourcesTests.swift in Sources */,
 			);
@@ -6415,6 +6425,8 @@
 				E8D9112BFB38FBCEEA8B22DD /* CheatSearchWindowController.swift in Sources */,
 				FC582061983BED3F49DE43B5 /* CheatSearchViewController.swift in Sources */,
 				E8D9112BFB38FBCEEA8B22DE /* BrowseOnlineCheatsWindowController.swift in Sources */,
+				87C950BD092A106979E8AF05 /* NetplayLobbyClient.swift in Sources */,
+				28A3CD63ED1C358C52A394F2 /* NetplayLobbyWindowController.swift in Sources */,
 				E8D9112BFB38FBCEEA8B22DF /* BrowseOnlineCheatsViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
