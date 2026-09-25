@@ -24,8 +24,10 @@
 
 import Foundation
 import AVFoundation
+@_implementationOnly import Atomics
 internal import os
 import OpenEmuBase.OEGameCore
+import OpenEmuBase.OERingBuffer
 
 @available(macOS 11.0, iOS 14.0, *)
 private var log = Logger(subsystem: "org.openemu.OpenEmuKit", category: "GameAudio2")
@@ -40,6 +42,14 @@ final public class GameAudio2: GameAudioProtocol {
     
     private let engine = AVAudioEngine()
     private var src: AVAudioSourceNode?
+    /// Converts the core's samples to float so `varispeed` can take them.
+    private let converter = AVAudioMixerNode()
+    /// Plays slightly faster or slower to keep the core's buffer near a small target fill.
+    private let varispeed = AVAudioUnitVarispeed()
+    private var rateTimer: DispatchSourceTimer?
+    /// Bytes the output asked for in its latest render (written on the audio thread).
+    private let lastRequestBytes = ManagedAtomic<Int>(0)
+    private var smoothedFill = 0.0
     private weak var gameCore: OEGameCore!
     private var isDefaultOutputDevice = true
     private var isRunning = false
@@ -47,20 +57,33 @@ final public class GameAudio2: GameAudioProtocol {
     public init(withCore gameCore: OEGameCore) {
         self.gameCore = gameCore
         volume = 1.0
+        engine.attach(converter)
+        engine.attach(varispeed)
     }
     
     deinit {
         stopMonitoringEngineConfiguration()
+        rateTimer?.cancel()
     }
     
     @objc public func audioSampleRateDidChange() {
-        guard isRunning else { return }
-        
+        // Before startAudio there is nothing to update; it reads the current rate itself.
+        guard src != nil else { return }
+
+        // Rebuild at the new rate even while audio isn't running yet. Cores often change rate
+        // right after starting (N64 games set their DAC rate while booting), which can land in
+        // the 20 ms between startAudio and its delayed resume. Ignoring it left playback at the
+        // old rate, pulling samples faster than the core produced them: constant underflow,
+        // heard as crackling. A pending resume starts the rebuilt engine.
+        let wasRunning = isRunning
         engine.stop()
         updateSourceNode()
         connectNodes()
         engine.prepare()
-        performResumeAudio()
+        if wasRunning {
+            performResumeAudio()
+        }
+        startRateControl()
     }
     
     public func startAudio() {
@@ -76,9 +99,11 @@ final public class GameAudio2: GameAudioProtocol {
         //  https://github.com/AudioKit/AudioKit/blob/f2a404ff6cf7492b93759d2cd954c8a5387c8b75/Examples/macOS/OutputSplitter/OutputSplitter/Audio/Output.swift#L88-L95
         performResumeAudio()
         startMonitoringEngineConfiguration()
+        startRateControl()
     }
     
     public func stopAudio() {
+        stopRateControl()
         engine.stop()
         destroyNodes()
         isRunning = true
@@ -152,9 +177,11 @@ final public class GameAudio2: GameAudioProtocol {
         let sd   = streamDescription
         let bytesPerFrame = sd.mBytesPerFrame
         let channelCount  = sd.mChannelsPerFrame
+        let lastRequestBytes = lastRequestBytes
         
         src = AVAudioSourceNode(format: renderFormat) { _, _, frameCount, inputData in
             let bytesRequested = UInt(frameCount * bytesPerFrame)
+            lastRequestBytes.store(Int(bytesRequested), ordering: .relaxed)
             let bytesCopied    = read(inputData.pointee.mBuffers.mData, bytesRequested)
             
             inputData.pointee.mBuffers.mDataByteSize    = UInt32(bytesCopied)
@@ -177,8 +204,70 @@ final public class GameAudio2: GameAudioProtocol {
     
     private func connectNodes() {
         guard let src else { fatalError("Expected src node") }
-        engine.connect(src, to: engine.mainMixerNode, format: nil)
+        // core samples → float at the core's rate → varispeed → main mixer (converts to the device)
+        let format = renderFormat
+        let floatFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: format.channelCount)
+        engine.connect(src, to: converter, format: format)
+        engine.connect(converter, to: varispeed, format: floatFormat)
+        engine.connect(varispeed, to: engine.mainMixerNode, format: floatFormat)
         engine.mainMixerNode.outputVolume = volume
+    }
+    
+    // MARK: - Latency control
+    
+    /// The core's emulated audio clock never exactly matches the output device's, so its buffer
+    /// slowly fills (adding latency until it overflows) or drains (underflowing). Playing up to
+    /// half a percent faster or slower keeps it near a small target; that's too little to hear.
+    private static let maxRateAdjustment = 0.005
+    
+    private func startRateControl() {
+        stopRateControl()
+        // Only OERingBuffer, which almost every core uses, reports how full it is
+        guard let ring = gameCore.audioBuffer(at: 0) as? OERingBuffer else { return }
+        lastRequestBytes.store(0, ordering: .relaxed)
+        smoothedFill = Double(ring.availableBytes)
+        
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            self?.adjustRate(for: ring)
+        }
+        timer.resume()
+        rateTimer = timer
+    }
+    
+    private func stopRateControl() {
+        rateTimer?.cancel()
+        rateTimer = nil
+        varispeed.rate = 1
+    }
+    
+    private func adjustRate(for ring: OERingBuffer) {
+        let request = lastRequestBytes.load(ordering: .relaxed)
+        guard request > 0 else { return }
+        
+        // The ring buffer returns silence below two requests, and cores write a frame at a time,
+        // so keep a few requests (or two frames) in hand.
+        let perFrame = Int(gameCore.audioBufferSize(forBuffer: 0))
+        let target = Double(max(4 * request, 2 * perFrame))
+        let fill = Double(ring.availableBytes)
+        
+        // A backlog (audio produced before playback started) would take many seconds to play
+        // off at half a percent, so drop it at once, a whole request at a time to keep the
+        // channels aligned.
+        if fill > 3 * target {
+            var scratch = [UInt8](repeating: 0, count: request)
+            // Stop a couple of requests above target: playback keeps draining meanwhile
+            while Double(ring.availableBytes) > target + Double(2 * request),
+                  ring.read(&scratch, maxLength: UInt(request)) > 0 {}
+            smoothedFill = Double(ring.availableBytes)
+            return
+        }
+        
+        smoothedFill += 0.2 * (fill - smoothedFill)
+        let error = (smoothedFill - target) / target
+        let adjustment = min(max(2 * Self.maxRateAdjustment * error, -Self.maxRateAdjustment), Self.maxRateAdjustment)
+        varispeed.rate = Float(1 + adjustment)
     }
     
     private var token: NSObjectProtocol?
