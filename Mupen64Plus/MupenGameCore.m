@@ -90,6 +90,7 @@ NSString *MupenControlNames[] = {
 
 - (void)OE_didReceiveStateChangeForParamType:(m64p_core_param)paramType value:(int)newValue;
 - (void)_beginLoadGame;
+- (BOOL)OE_isNetplayRequested;
 - (BOOL)OE_connectToNetplayServerWithError:(NSError **)error;
 - (void)OE_registerNetplayPlayer;
 - (void)_postRetroAchievementsSessionSnapshot;
@@ -562,7 +563,7 @@ static void MupenSetAudioSpeed(int percent)
     if (CoreDoCommand(M64CMD_ROM_OPEN, (int)romData.length, (void *)romData.bytes) != M64ERR_SUCCESS)
         return NO;
 
-    if (self.netplayHost.length > 0 && ![self OE_connectToNetplayServerWithError:error])
+    if (self.OE_isNetplayRequested && ![self OE_connectToNetplayServerWithError:error])
         return NO;
 
     // RetroAchievements: create rc_client and observe the OE token. Game identification
@@ -685,11 +686,18 @@ static void MupenSetAudioSpeed(int percent)
     LoadPlugin(M64PLUGIN_RSP, @"mupen64plus-rsp-cxd4.so");
 
     // Registration sends the input plugin's controller pak setup, so it has to follow LoadPlugin
-    if (self.netplayHost.length > 0)
+    if (self.OE_isNetplayRequested)
         [self OE_registerNetplayPlayer];
 }
 
 #pragma mark - Netplay
+
+/* Cores are released separately from the app, and OpenEmu versions without netplay don't have
+ * the netplay properties: asking for them there would crash every N64 game. */
+- (BOOL)OE_isNetplayRequested
+{
+    return [self respondsToSelector:@selector(netplayHost)] && self.netplayHost.length > 0;
+}
 
 - (BOOL)OE_connectToNetplayServerWithError:(NSError **)error
 {
@@ -754,7 +762,7 @@ static void MupenSetAudioSpeed(int percent)
         CoreDoCommand(M64CMD_EXECUTE, 0, NULL);
 
         // Tell the server we've left, so the other players see the disconnect
-        if (self.netplayHost.length > 0)
+        if (self.OE_isNetplayRequested)
             CoreDoCommand(M64CMD_NETPLAY_CLOSE, 0, NULL);
     }
 }
