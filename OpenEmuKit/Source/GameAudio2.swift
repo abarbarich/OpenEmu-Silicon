@@ -183,6 +183,10 @@ final public class GameAudio2: GameAudioProtocol {
             let bytesRequested = UInt(frameCount * bytesPerFrame)
             lastRequestBytes.store(Int(bytesRequested), ordering: .relaxed)
             let bytesCopied    = read(inputData.pointee.mBuffers.mData, bytesRequested)
+            // PROTOTYPE stream play: send the host's sound to the remote viewer too
+            if #available(macOS 11.3, *), let host = StreamHost.current, let data = inputData.pointee.mBuffers.mData {
+                host.audio(data, count: Int(bytesCopied), sampleRate: sd.mSampleRate, channels: channelCount)
+            }
             
             inputData.pointee.mBuffers.mDataByteSize    = UInt32(bytesCopied)
             inputData.pointee.mBuffers.mNumberChannels  = channelCount

@@ -85,6 +85,10 @@ extension OSLog {
     var _unhandledEventsMonitor: Any?
     var _hasStartedAudio = false
     var _adaptiveSyncEnabled = false
+    /// PROTOTYPE stream play: sends frames and sound to a remote viewer (see StreamHost).
+    var _streamHostObject: AnyObject?
+    @available(macOS 11.3, *)
+    var _streamHost: StreamHost? { _streamHostObject as? StreamHost }
     
     var _handleEvents: Bool = false
     var _handleKeyboardEvents: Bool = false
@@ -152,6 +156,11 @@ extension OSLog {
         setupGameRenderer()
         setupCVBuffer()
         setupRemoteLayer()
+        if #available(macOS 11.3, *), StreamHost.isEnabled {
+            let host = StreamHost(device: _device, gameCore: gameCore)
+            host.start()
+            _streamHostObject = host
+        }
         if let _shader = _shader {
             try? setShaderURL(_shader, parameters: _shaderParameters)
             self._shader            = nil
@@ -568,6 +577,8 @@ extension OSLog {
             _raUnrecognizedObserver = nil
         }
 
+        if #available(macOS 11.3, *) { _streamHost?.stop() }
+        _streamHostObject = nil
         gameCore.stopEmulation {
             self._gameAudio.stopAudio()
             gameCore.renderDelegate = nil
@@ -890,6 +901,9 @@ extension OSLog {
             offscreenCB.enqueue()
             if let sourceTexture = _gameRenderer.prepareFrameForRender(commandBuffer: offscreenCB) {
                 _filterChain.renderOffscreenPasses(sourceTexture: sourceTexture, commandBuffer: offscreenCB)
+                if #available(macOS 11.3, *) {
+                    _streamHost?.submit(frame: sourceTexture, flipped: flipVertically, commandBuffer: offscreenCB)
+                }
             }
             offscreenCB.commit()
             
