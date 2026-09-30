@@ -43,6 +43,7 @@ import OpenEmuBase
 ///                  5 pong   echo of a ping payload
 ///   viewer → host  3 input  `[buttons: UInt32, bit n = OEN64Button n][stickX: Int8][stickY: Int8]` (y up)
 ///                  4 ping   8 opaque bytes
+///                  6 keyframe request (the viewer lost its place: send a full frame)
 @available(macOS 11.3, *)
 final class StreamHost {
     static let port: UInt16 = 47100
@@ -167,6 +168,8 @@ final class StreamHost {
                 DispatchQueue.main.async { self.applyInput(buttons: buttons, x: x, y: y) }
             case 4:
                 send(type: 5, payload: payload)
+            case 6:
+                lock.lock(); needsKeyframe = true; lock.unlock()
             default:
                 break
             }
@@ -302,7 +305,9 @@ final class StreamHost {
         let bitrate = UserDefaults(suiteName: "org.openemu.OpenEmu")?.integer(forKey: "OEStreamBitrate") ?? 0
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: (bitrate > 0 ? bitrate : 4_000_000) as CFNumber)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber)
+        // No periodic keyframes: a full frame is many times bigger than the rest and arrives late over
+        // Wi-Fi, a visible skip. Send one when a viewer connects or asks for it instead.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 0 as CFNumber)
         VTCompressionSessionPrepareToEncodeFrames(newSession)
         session = newSession
         sessionSize = (width, height)

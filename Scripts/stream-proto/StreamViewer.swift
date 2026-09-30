@@ -261,7 +261,7 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             formatDescription = makeFormatDescription(sps: sets[0], pps: sets[1])
         }
-        guard let formatDescription else { return }
+        guard let formatDescription else { requestKeyframe(); return }
         let frame = payload.subdata(in: index..<payload.endIndex)
         guard let sample = makeSampleBuffer(frame, format: formatDescription) else { return }
         let flipped = flags & 2 != 0
@@ -298,7 +298,11 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
         lastShown = now
         DispatchQueue.main.async {
             self.displayLayer.setAffineTransform(flipped ? CGAffineTransform(scaleX: 1, y: -1) : .identity)
-            if self.displayLayer.status == .failed { self.displayLayer.flush() }
+            if self.displayLayer.status == .failed {
+                // The decoder lost its place: start again from a fresh full frame
+                self.displayLayer.flush()
+                self.requestKeyframe()
+            }
             self.displayLayer.enqueue(sample)
             self.framesThisSecond += 1
         }
@@ -370,6 +374,14 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
         message.appendLE(UInt32(payload.count))
         message.append(payload)
         connection?.send(content: message, completion: .contentProcessed { _ in })
+    }
+
+    private var lastKeyframeRequest = Date.distantPast
+
+    private func requestKeyframe() {
+        guard Date().timeIntervalSince(lastKeyframeRequest) > 0.5 else { return }
+        lastKeyframeRequest = Date()
+        send(type: 6, payload: Data())
     }
 
     private func tick() {
