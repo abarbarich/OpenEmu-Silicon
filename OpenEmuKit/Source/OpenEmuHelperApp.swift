@@ -157,7 +157,7 @@ extension OSLog {
         setupCVBuffer()
         setupRemoteLayer()
         if #available(macOS 11.3, *), StreamHost.isEnabled {
-            let host = StreamHost(device: _device, gameCore: gameCore)
+            let host = StreamHost(device: _device, gameCore: gameCore, systemController: _systemController, responder: _systemResponder)
             host.start()
             _streamHostObject = host
         }

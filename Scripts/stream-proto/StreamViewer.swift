@@ -47,11 +47,18 @@ extension Data {
     }
 }
 
-/// N64 buttons, numbered like OEN64Button.
-enum N64 {
-    static let dUp = 0, dDown = 1, dLeft = 2, dRight = 3
-    static let cUp = 4, cDown = 5, cLeft = 6, cRight = 7
-    static let a = 8, b = 9, l = 10, r = 11, z = 12, start = 13
+/// The viewer presents itself to the host as a Nintendo Switch Pro Controller: these are OpenEmu's
+/// control names for it, which the host maps to the system being played through its default bindings.
+enum SwitchPro {
+    static let prefix = "OEControllerNintendoSwitchProController"
+    // Face buttons by position, as OpenEmu labels a real Switch Pro: B bottom, A right, Y left, X top
+    static let bottom = prefix + "ButtonB", right = prefix + "ButtonA", left = prefix + "ButtonY", top = prefix + "ButtonX"
+    static let l = prefix + "ButtonL", r = prefix + "ButtonR", zl = prefix + "ButtonZL", zr = prefix + "ButtonZR"
+    static let plus = prefix + "ButtonPlus", minus = prefix + "ButtonMinus", home = prefix + "ButtonHome"
+    static let leftStickButton = prefix + "ButtonLeftAnalog", rightStickButton = prefix + "ButtonRightAnalog"
+    static func dpad(_ dir: String) -> String { prefix + "DPad" + dir }
+    static func leftStick(_ dir: String) -> String { prefix + "LeftAnalog" + dir }
+    static func rightStick(_ dir: String) -> String { prefix + "RightAnalog" + dir }
 }
 
 // MARK: - Audio
@@ -127,11 +134,10 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var formatDescription: CMVideoFormatDescription?
     private var host = ""
 
-    // Input state, sent to the host
-    private var keyboardButtons: UInt32 = 0
-    private var keyboardStick = (x: 0, y: 0)
-    private var lastSent: (UInt32, Int8, Int8) = (0, 0, 0)
-    private var lastSendTime = Date.distantPast
+    // Input state, sent to the host as it changes: control name → value (buttons 0/1, stick directions 0…1)
+    private var keyboardState: [String: Float] = [:]
+    private var sentState: [String: Float] = [:]
+    private var player: UInt8 = 2
 
     // Video jitter buffer: frames wait here and go on screen one per 1/60 s, in step with the display
     private let frameLock = NSLock()
@@ -244,6 +250,11 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case 1: handleVideo(payload)
             case 2: handleAudio(payload)
             case 5: handlePong(payload)
+            case 8:
+                if let info = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] {
+                    if let p = info["player"] as? Int { player = UInt8(p) }
+                    print("session: system \(info["system"] ?? "?"), you are player \(player)"); fflush(stdout)
+                }
             default: break
             }
         }
@@ -399,55 +410,67 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func sendInputIfNeeded() {
-        var buttons = keyboardButtons
-        var x = keyboardStick.x, y = keyboardStick.y
+        var state = keyboardState
         if let pad = GCController.controllers().first?.extendedGamepad {
-            func set(_ bit: Int, _ on: Bool) { if on { buttons |= 1 << UInt32(bit) } }
-            set(N64.dUp, pad.dpad.up.isPressed); set(N64.dDown, pad.dpad.down.isPressed)
-            set(N64.dLeft, pad.dpad.left.isPressed); set(N64.dRight, pad.dpad.right.isPressed)
-            set(N64.cUp, pad.rightThumbstick.yAxis.value > 0.5); set(N64.cDown, pad.rightThumbstick.yAxis.value < -0.5)
-            set(N64.cLeft, pad.rightThumbstick.xAxis.value < -0.5); set(N64.cRight, pad.rightThumbstick.xAxis.value > 0.5)
-            set(N64.a, pad.buttonA.isPressed)
-            set(N64.b, pad.buttonB.isPressed || pad.buttonX.isPressed)
-            set(N64.l, pad.leftShoulder.isPressed); set(N64.r, pad.rightShoulder.isPressed)
-            set(N64.z, pad.leftTrigger.isPressed || pad.rightTrigger.isPressed)
-            set(N64.start, pad.buttonMenu.isPressed)
-            let px = Int(pad.leftThumbstick.xAxis.value * 127), py = Int(pad.leftThumbstick.yAxis.value * 127)
-            if abs(px) > abs(x) { x = px }
-            if abs(py) > abs(y) { y = py }
+            func button(_ name: String, _ on: Bool) { if on { state[name] = 1 } }
+            func stick(_ name: (String) -> String, _ x: Float, _ y: Float) {
+                for (dir, v) in [("Right", x), ("Left", -x), ("Up", y), ("Down", -y)] where v > 0.02 {
+                    state[name(dir)] = max(state[name(dir)] ?? 0, min(v, 1))
+                }
+            }
+            button(SwitchPro.bottom, pad.buttonA.isPressed); button(SwitchPro.right, pad.buttonB.isPressed)
+            button(SwitchPro.left, pad.buttonX.isPressed); button(SwitchPro.top, pad.buttonY.isPressed)
+            button(SwitchPro.l, pad.leftShoulder.isPressed); button(SwitchPro.r, pad.rightShoulder.isPressed)
+            button(SwitchPro.zl, pad.leftTrigger.isPressed); button(SwitchPro.zr, pad.rightTrigger.isPressed)
+            button(SwitchPro.plus, pad.buttonMenu.isPressed); button(SwitchPro.minus, pad.buttonOptions?.isPressed ?? false)
+            button(SwitchPro.home, pad.buttonHome?.isPressed ?? false)
+            button(SwitchPro.leftStickButton, pad.leftThumbstickButton?.isPressed ?? false)
+            button(SwitchPro.rightStickButton, pad.rightThumbstickButton?.isPressed ?? false)
+            button(SwitchPro.dpad("Up"), pad.dpad.up.isPressed); button(SwitchPro.dpad("Down"), pad.dpad.down.isPressed)
+            button(SwitchPro.dpad("Left"), pad.dpad.left.isPressed); button(SwitchPro.dpad("Right"), pad.dpad.right.isPressed)
+            stick(SwitchPro.leftStick, pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value)
+            stick(SwitchPro.rightStick, pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value)
         }
-        let state = (buttons, Int8(clamping: x), Int8(clamping: y))
-        // Send on every change, and at least every 100 ms so a lost update can't stick
-        guard state != lastSent || Date().timeIntervalSince(lastSendTime) > 0.1 else { return }
-        var payload = Data()
-        payload.appendLE(state.0)
-        payload.append(UInt8(bitPattern: state.1))
-        payload.append(UInt8(bitPattern: state.2))
-        send(type: 3, payload: payload)
-        lastSent = state
-        lastSendTime = Date()
+        // Send only what changed. Buttons: press/release. Stick directions: analog value.
+        for name in Set(state.keys).union(sentState.keys) {
+            let value = state[name] ?? 0, previous = sentState[name] ?? 0
+            let isStick = name.contains("Analog") && !name.contains("ButtonLeftAnalog") && !name.contains("ButtonRightAnalog")
+            if isStick {
+                guard abs(value - previous) >= 0.02 || (value == 0) != (previous == 0) else { continue }
+                sendKey(name, kind: 2, value: value)
+            } else {
+                guard (value > 0.5) != (previous > 0.5) else { continue }
+                sendKey(name, kind: value > 0.5 ? 1 : 0, value: value)
+            }
+            if value == 0 { sentState[name] = nil } else { sentState[name] = value }
+        }
     }
 
-    /// Keyboard: arrows = stick, X = A, Z = B, A = Z, Return = Start, Q/W = L/R, I/J/K/L = C buttons, T/F/G/H = d-pad.
+    private func sendKey(_ name: String, kind: UInt8, value: Float) {
+        var payload = Data()
+        payload.append(player)
+        payload.append(kind)
+        payload.appendLE(value.bitPattern)
+        payload.append(contentsOf: Array(name.utf8))
+        send(type: 7, payload: payload)
+    }
+
+    /// Keyboard, laid out like a Switch Pro: arrows = left stick, X = bottom button, Z = right button,
+    /// C = left, V = top, A = ZL, S = ZR, Q / W = L / R, Return = +, Backspace = −,
+    /// I J K L = right stick (C buttons on N64), T F G H = d-pad.
     private func installKeyboard() {
-        let buttonKeys: [UInt16: Int] = [7: N64.a, 6: N64.b, 0: N64.z, 36: N64.start, 12: N64.l, 13: N64.r,
-                                         34: N64.cUp, 40: N64.cDown, 38: N64.cLeft, 37: N64.cRight,
-                                         17: N64.dUp, 5: N64.dDown, 3: N64.dLeft, 4: N64.dRight]
-        var arrows = Set<UInt16>()
+        let keys: [UInt16: String] = [
+            7: SwitchPro.bottom, 6: SwitchPro.right, 8: SwitchPro.left, 9: SwitchPro.top,
+            0: SwitchPro.zl, 1: SwitchPro.zr, 12: SwitchPro.l, 13: SwitchPro.r,
+            36: SwitchPro.plus, 51: SwitchPro.minus,
+            34: SwitchPro.rightStick("Up"), 40: SwitchPro.rightStick("Down"), 38: SwitchPro.rightStick("Left"), 37: SwitchPro.rightStick("Right"),
+            17: SwitchPro.dpad("Up"), 5: SwitchPro.dpad("Down"), 3: SwitchPro.dpad("Left"), 4: SwitchPro.dpad("Right"),
+            126: SwitchPro.leftStick("Up"), 125: SwitchPro.leftStick("Down"), 123: SwitchPro.leftStick("Left"), 124: SwitchPro.leftStick("Right"),
+        ]
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-            guard let self, !event.modifierFlags.contains(.command) else { return event }
-            let down = event.type == .keyDown
-            if let bit = buttonKeys[event.keyCode] {
-                if down { self.keyboardButtons |= 1 << UInt32(bit) } else { self.keyboardButtons &= ~(1 << UInt32(bit)) }
-                return nil
-            }
-            if [123, 124, 125, 126].contains(event.keyCode) {  // left, right, down, up
-                if down { arrows.insert(event.keyCode) } else { arrows.remove(event.keyCode) }
-                self.keyboardStick = ((arrows.contains(124) ? 127 : 0) - (arrows.contains(123) ? 127 : 0),
-                                      (arrows.contains(126) ? 127 : 0) - (arrows.contains(125) ? 127 : 0))
-                return nil
-            }
-            return event
+            guard let self, !event.modifierFlags.contains(.command), let name = keys[event.keyCode] else { return event }
+            if event.type == .keyDown { self.keyboardState[name] = 1 } else { self.keyboardState[name] = nil }
+            return nil
         }
     }
 }

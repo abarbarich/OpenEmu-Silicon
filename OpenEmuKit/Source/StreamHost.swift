@@ -30,20 +30,27 @@ import VideoToolbox
 import Network
 internal import os.log
 import OpenEmuBase
+import OpenEmuSystem
 
 /// PROTOTYPE (stream play): sends the game's picture and sound to a remote Stream Viewer and
 /// plays that viewer's controller as player 2, so only this Mac runs the game.
 ///
 /// Turned on with `defaults write org.openemu.OpenEmu OEStreamHostEnabled -bool true`;
-/// N64 only for now. Wire format, all integers little-endian, each message
+/// Works for every system: the viewer sends named buttons, played through the system responder.
+/// Wire format, all integers little-endian, each message
 /// `[type: UInt8][length: UInt32][payload]`:
 ///   host → viewer  1 video  `[flags: keyframe=1, flipped=2][width: UInt16][height: UInt16]`
 ///                           `[if keyframe: spsLen: UInt16, sps, ppsLen: UInt16, pps][AVCC H.264 frame]`
 ///                  2 audio  `[sampleRate: Float64][channels: UInt8][16-bit PCM]`
 ///                  5 pong   echo of a ping payload
-///   viewer → host  3 input  `[buttons: UInt32, bit n = OEN64Button n][stickX: Int8][stickY: Int8]` (y up)
-///                  4 ping   8 opaque bytes
+///                  8 session `JSON {"system": <system identifier>, "player": <this viewer's player number>}`
+///   viewer → host  4 ping   8 opaque bytes
 ///                  6 keyframe request (the viewer lost its place: send a full frame)
+///                  7 key event `[player: UInt8][kind: UInt8 0=release 1=press 2=analog][value: Float32][name: UTF-8]`
+///                    `name` is a system button name (e.g. "OESNESButtonA", from the system plugin's
+///                    OEGenericControlNamesKey) or, for a viewer without OpenEmu, a Nintendo Switch Pro
+///                    Controller control name (e.g. "OEControllerNintendoSwitchProControllerButtonB"), which
+///                    the host maps through the system's default Switch Pro bindings.
 @available(macOS 11.3, *)
 final class StreamHost {
     static let port: UInt16 = 47100
@@ -61,6 +68,8 @@ final class StreamHost {
     private var listener: NWListener?
     private var connection: NWConnection?  // guarded by lock
     private weak var gameCore: OEGameCore?
+    private let systemController: OESystemController
+    private weak var responder: OESystemResponder?
 
     private let device: MTLDevice
     private var textureCache: CVMetalTextureCache?
@@ -70,11 +79,18 @@ final class StreamHost {
     private var pendingFrames = 0          // guarded by lock
     private var needsKeyframe = true       // guarded by lock
     private var receiveBuffer = Data()
-    private var lastButtons: UInt32 = 0
 
-    init(device: MTLDevice, gameCore: OEGameCore) {
+    /// Keys the viewer currently holds, so a disconnect releases them all (main thread only).
+    private var heldKeys: [String: OESystemKey] = [:]
+    private var analogKeys: [String: OESystemKey] = [:]
+    /// Switch Pro control name → system key, built on first use (see `keyDescription(for:)`).
+    private var switchProKeys: [String: OEKeyBindingDescription]?
+
+    init(device: MTLDevice, gameCore: OEGameCore, systemController: OESystemController, responder: OESystemResponder) {
         self.device = device
         self.gameCore = gameCore
+        self.systemController = systemController
+        self.responder = responder
         CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
     }
 
@@ -119,6 +135,7 @@ final class StreamHost {
         }
         newConnection.start(queue: queue)
         receive(on: newConnection)
+        sendSession()
         log.notice("Stream viewer connected from \(String(describing: newConnection.endpoint), privacy: .public)")
     }
 
@@ -161,11 +178,12 @@ final class StreamHost {
             let payload = receiveBuffer.subdata(in: (start + 5)..<(start + 5 + length))
             receiveBuffer.removeSubrange(start..<(start + 5 + length))
             switch type {
-            case 3 where payload.count >= 6:
-                let buttons = payload.readLE(UInt32.self, at: payload.startIndex)
-                let x = Int8(bitPattern: payload[payload.startIndex + 4])
-                let y = Int8(bitPattern: payload[payload.startIndex + 5])
-                DispatchQueue.main.async { self.applyInput(buttons: buttons, x: x, y: y) }
+            case 7 where payload.count >= 7:
+                let player = UInt(payload[payload.startIndex])
+                let kind = payload[payload.startIndex + 1]
+                let value = CGFloat(Float(bitPattern: payload.readLE(UInt32.self, at: payload.startIndex + 2)))
+                guard let name = String(data: payload.subdata(in: (payload.startIndex + 6)..<payload.endIndex), encoding: .utf8) else { break }
+                DispatchQueue.main.async { self.applyKeyEvent(name: name, player: player, kind: kind, value: value) }
             case 4:
                 send(type: 5, payload: payload)
             case 6:
@@ -176,32 +194,94 @@ final class StreamHost {
         }
     }
 
-    // MARK: - Input (player 2)
+    // MARK: - Input
 
-    private static let player: UInt = 2
-    private static let buttonCount: UInt32 = 14  // OEN64ButtonDPadUp ... OEN64ButtonStart
-    private static let analogUp: Int32 = 14, analogDown: Int32 = 15, analogLeft: Int32 = 16, analogRight: Int32 = 17
+    private static let switchProIdentifier = "OEControllerNintendoSwitchProController"
+    static let guestPlayer: UInt = 2
 
-    private func applyInput(buttons: UInt32, x: Int8, y: Int8) {
-        guard let core = gameCore as AnyObject? else { return }
-        let changed = buttons ^ lastButtons
-        for button in 0..<Self.buttonCount where changed & (1 << button) != 0 {
-            if buttons & (1 << button) != 0 {
-                core.didPushN64Button?(Int32(button), forPlayer: Self.player)
-            } else {
-                core.didReleaseN64Button?(Int32(button), forPlayer: Self.player)
-            }
+    private func sendSession() {
+        let info: [String: Any] = ["system": systemController.systemIdentifier ?? "", "player": Self.guestPlayer]
+        if let json = try? JSONSerialization.data(withJSONObject: info) { send(type: 8, payload: json) }
+    }
+
+    /// Presses, releases or moves one system button for a player, as a real controller would through
+    /// the system responder. `kind`: 0 release, 1 press, 2 analog with `value` 0…1.
+    private func applyKeyEvent(name: String, player: UInt, kind: UInt8, value: CGFloat) {
+        guard let responder, player == Self.guestPlayer, let description = keyDescription(for: name),
+              let key = OESystemKey(key: description.index, player: player, isAnalogic: description.isAnalogic)
+        else { return }
+        let id = "\(player):\(description.name)"
+        switch kind {
+        case 1:
+            heldKeys[id] = key
+            responder.pressEmulatorKey(key)
+        case 2:
+            if value > 0 { analogKeys[id] = key } else { analogKeys[id] = nil }
+            responder.changeAnalogEmulatorKey(key, value: min(max(value, 0), 1))
+        default:
+            heldKeys[id] = nil
+            responder.releaseEmulatorKey(key)
         }
-        lastButtons = buttons
-        let fx = CGFloat(x) / 127, fy = CGFloat(y) / 127
-        core.didMoveN64JoystickDirection?(Self.analogRight, withValue: max(fx, 0), forPlayer: Self.player)
-        core.didMoveN64JoystickDirection?(Self.analogLeft, withValue: max(-fx, 0), forPlayer: Self.player)
-        core.didMoveN64JoystickDirection?(Self.analogUp, withValue: max(fy, 0), forPlayer: Self.player)
-        core.didMoveN64JoystickDirection?(Self.analogDown, withValue: max(-fy, 0), forPlayer: Self.player)
     }
 
     private func releaseAllButtons() {
-        DispatchQueue.main.async { self.applyInput(buttons: 0, x: 0, y: 0) }
+        DispatchQueue.main.async {
+            guard let responder = self.responder else { return }
+            for key in self.heldKeys.values { responder.releaseEmulatorKey(key) }
+            for key in self.analogKeys.values { responder.changeAnalogEmulatorKey(key, value: 0) }
+            self.heldKeys.removeAll()
+            self.analogKeys.removeAll()
+        }
+    }
+
+    /// A system button by its own name, or by the Switch Pro control that the system maps to it by default.
+    private func keyDescription(for name: String) -> OEKeyBindingDescription? {
+        if let description = systemController.allKeyBindingsDescriptions[name] { return description }
+        if switchProKeys == nil { switchProKeys = buildSwitchProKeys() }
+        return switchProKeys?[name]
+    }
+
+    /// Reverses the system's default Switch Pro bindings (system key → control) into control → key.
+    /// The defaults list one direction of each d-pad and stick and imply the rest, so those are
+    /// expanded here: the opposite axis key, and every key of a hat switch.
+    private func buildSwitchProKeys() -> [String: OEKeyBindingDescription] {
+        var keys: [String: OEKeyBindingDescription] = [:]
+        let defaults = systemController.defaultDeviceControls[Self.switchProIdentifier] ?? [:]
+        for (keyName, control) in defaults {
+            guard let description = systemController.allKeyBindingsDescriptions[keyName] else { continue }
+            keys[control] = description
+            if description.axisGroup != nil, let opposite = description.oppositeKey,
+               let (dir, _) = Self.trailingDirection(of: control), let oppositeDir = Self.opposite[dir] {
+                keys[Self.replacingTrailingDirection(of: control, with: oppositeDir)] = opposite
+            }
+            if description.hatSwitchGroup != nil, let hatKeys = description.hatSwitchKeys,
+               Self.trailingDirection(of: control) != nil {
+                for hatKey in hatKeys {
+                    if let (dir, _) = Self.trailingDirection(of: hatKey.name) {
+                        keys[Self.replacingTrailingDirection(of: control, with: dir)] = hatKey
+                    }
+                }
+            }
+        }
+        if keys.isEmpty {
+            log.error("No default Switch Pro bindings for \(self.systemController.systemIdentifier ?? "?", privacy: .public); a viewer without OpenEmu can't play")
+        }
+        return keys
+    }
+
+    private static let directions = ["Up", "Down", "Left", "Right"]
+    private static let opposite = ["Up": "Down", "Down": "Up", "Left": "Right", "Right": "Left"]
+
+    private static func trailingDirection(of name: String) -> (String, String)? {
+        for direction in directions where name.hasSuffix(direction) {
+            return (direction, String(name.dropLast(direction.count)))
+        }
+        return nil
+    }
+
+    private static func replacingTrailingDirection(of name: String, with direction: String) -> String {
+        guard let (_, stem) = trailingDirection(of: name) else { return name }
+        return stem + direction
     }
 
     // MARK: - Video
@@ -300,7 +380,7 @@ final class StreamHost {
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
-        // N64 is 640x480 at most; ~4 Mbps looks the same as more and keeps Wi-Fi from queuing
+        // Retro consoles are small pictures; ~4 Mbps looks the same as more and keeps Wi-Fi from queuing
         // (`defaults write org.openemu.OpenEmu OEStreamBitrate -int <bits per second>` to experiment)
         let bitrate = UserDefaults(suiteName: "org.openemu.OpenEmu")?.integer(forKey: "OEStreamBitrate") ?? 0
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: (bitrate > 0 ? bitrate : 4_000_000) as CFNumber)
@@ -352,13 +432,6 @@ final class StreamHost {
         payload.append(bytes.assumingMemoryBound(to: UInt8.self), count: count)
         queue.async { self.send(type: 2, payload: payload) }
     }
-}
-
-/// The N64 system responder calls, looked up at run time (the N64 plugin isn't linked into OpenEmuKit).
-@objc private protocol StreamN64Input {
-    @objc optional func didPushN64Button(_ button: Int32, forPlayer player: UInt)
-    @objc optional func didReleaseN64Button(_ button: Int32, forPlayer player: UInt)
-    @objc optional func didMoveN64JoystickDirection(_ button: Int32, withValue value: CGFloat, forPlayer player: UInt)
 }
 
 extension Data {
