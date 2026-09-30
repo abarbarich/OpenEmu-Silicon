@@ -207,10 +207,25 @@ final class StreamHost {
     /// Presses, releases or moves one system button for a player, as a real controller would through
     /// the system responder. `kind`: 0 release, 1 press, 2 analog with `value` 0…1.
     private func applyKeyEvent(name: String, player: UInt, kind: UInt8, value: CGFloat) {
-        guard let responder, player == Self.guestPlayer, let description = keyDescription(for: name),
-              let key = OESystemKey(key: description.index, player: player, isAnalogic: description.isAnalogic)
-        else { return }
+        guard let responder, player == Self.guestPlayer else { return }
+        guard let description = keyDescription(for: name) else {
+            log.debug("Ignoring unknown button \(name, privacy: .public) from the viewer")
+            return
+        }
+        guard let key = OESystemKey(key: description.index, player: player, isAnalogic: description.isAnalogic) else { return }
         let id = "\(player):\(description.name)"
+        // A stick on a digital button (right stick → N64 C buttons) presses it past half travel, and a
+        // button on an analog key pushes it fully, the way OpenEmu's own bindings behave.
+        var kind = kind, value = value
+        if kind == 2 && !description.isAnalogic {
+            let pressed = value > 0.5
+            guard pressed != (heldKeys[id] != nil) else { return }
+            kind = pressed ? 1 : 0
+        } else if kind != 2 && description.isAnalogic {
+            value = kind == 1 ? 1 : 0
+            kind = 2
+        }
+        log.debug("Viewer key \(description.name, privacy: .public) kind \(kind) value \(value)")
         switch kind {
         case 1:
             heldKeys[id] = key
@@ -261,6 +276,19 @@ final class StreamHost {
                         keys[Self.replacingTrailingDirection(of: control, with: dir)] = hatKey
                     }
                 }
+            }
+        }
+        // Some systems split a d-pad into two axis pairs and only list one (N64: DPadUp), leaving
+        // Left/Right unmapped even for a real Switch Pro. Fill in by name: a control "…DPadUp" mapped
+        // to key "…DPadUp" also maps "…DPadLeft" to "…DPadLeft", and so on, where those keys exist.
+        for (keyName, control) in defaults {
+            guard let (_, keyStem) = Self.trailingDirection(of: keyName),
+                  let (_, controlStem) = Self.trailingDirection(of: control) else { continue }
+            for direction in Self.directions {
+                let siblingControl = controlStem + direction
+                guard keys[siblingControl] == nil,
+                      let sibling = systemController.allKeyBindingsDescriptions[keyStem + direction] else { continue }
+                keys[siblingControl] = sibling
             }
         }
         if keys.isEmpty {
