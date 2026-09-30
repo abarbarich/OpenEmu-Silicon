@@ -31,6 +31,7 @@ import AVFoundation
 import CoreMedia
 import GameController
 import Network
+import CoreVideo
 
 // MARK: - Wire helpers
 
@@ -55,8 +56,10 @@ enum N64 {
 
 // MARK: - Audio
 
-/// Plays the host's 16-bit PCM, keeping only a small backlog so sound stays close to the picture.
+/// Plays the host's 16-bit PCM through a small jitter buffer: playback waits until ~60 ms is
+/// queued, and after running dry waits to refill rather than stuttering through every late packet.
 final class StreamAudio {
+    private var primed = false
     private let engine = AVAudioEngine()
     private var source: AVAudioSourceNode?
     private var sampleRate = 0.0, channels: UInt32 = 0
@@ -69,8 +72,9 @@ final class StreamAudio {
         }
         lock.lock()
         pending.append(pcm)
-        // Keep at most ~120 ms queued: drop the oldest audio rather than fall behind
-        let maxBytes = Int(sampleRate * 0.12) * Int(channels) * 2
+        // Keep at most ~200 ms queued: drop the oldest audio rather than fall further behind
+        let frameBytes = Int(channels) * 2
+        let maxBytes = Int(sampleRate * 0.2) * frameBytes
         if pending.count > maxBytes { pending.removeFirst(pending.count - maxBytes) }
         lock.unlock()
     }
@@ -80,7 +84,7 @@ final class StreamAudio {
         if let source { engine.detach(source) }
         self.sampleRate = sampleRate
         self.channels = channels
-        lock.lock(); pending.removeAll(); lock.unlock()
+        lock.lock(); pending.removeAll(); primed = false; lock.unlock()
 
         guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: channels, interleaved: true)
         else { return }
@@ -88,8 +92,11 @@ final class StreamAudio {
             guard let self else { return noErr }
             let buffer = bufferList.pointee.mBuffers
             let wanted = Int(frameCount) * Int(channels) * 2
+            let target = Int(sampleRate * 0.06) * Int(channels) * 2
             self.lock.lock()
-            let available = min(wanted, self.pending.count)
+            if !self.primed && self.pending.count >= target { self.primed = true }
+            if self.primed && self.pending.count < wanted { self.primed = false }  // ran dry: refill first
+            let available = self.primed ? min(wanted, self.pending.count) : 0
             self.pending.withUnsafeBytes { src in
                 if let dst = buffer.mData, available > 0 { memcpy(dst, src.baseAddress!, available) }
             }
@@ -126,6 +133,13 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastSent: (UInt32, Int8, Int8) = (0, 0, 0)
     private var lastSendTime = Date.distantPast
 
+    // Video jitter buffer: frames wait here and go on screen one per 1/60 s, in step with the display
+    private let frameLock = NSLock()
+    private var frameQueue: [(CMSampleBuffer, Bool)] = []
+    private var framesPrimed = false
+    private var lastShown: CFTimeInterval = 0
+    private var displayLink: CVDisplayLink?
+
     // Stats for the title bar
     private var framesThisSecond = 0
     private var rttMilliseconds: Double?
@@ -148,6 +162,7 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         installKeyboard()
+        startDisplayLink()
         GCController.startWirelessControllerDiscovery {}
         Timer.scheduledTimer(withTimeInterval: 1.0 / 120, repeats: true) { [weak self] _ in self?.sendInputIfNeeded() }
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
@@ -250,12 +265,41 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let frame = payload.subdata(in: index..<payload.endIndex)
         guard let sample = makeSampleBuffer(frame, format: formatDescription) else { return }
         let flipped = flags & 2 != 0
+        frameLock.lock()
+        frameQueue.append((sample, flipped))
+        // Never hold more than ~4 frames: if the queue backs up, skip ahead to keep the delay short
+        if frameQueue.count > 4 { frameQueue.removeFirst(frameQueue.count - 2) }
+        frameLock.unlock()
+    }
+
+    /// Called on every display refresh; shows at most one frame per 1/60 s.
+    private func displayRefresh() {
+        let now = CACurrentMediaTime()
+        guard now - lastShown >= 1.0 / 60 * 0.9 else { return }  // 120 Hz displays: every other refresh
+        frameLock.lock()
+        if !framesPrimed && frameQueue.count >= 2 { framesPrimed = true }  // start with one frame in reserve
+        if framesPrimed && frameQueue.isEmpty { framesPrimed = false }   // ran dry: rebuild the reserve
+        let next = framesPrimed ? frameQueue.removeFirst() : nil
+        frameLock.unlock()
+        guard let (sample, flipped) = next else { return }
+        lastShown = now
         DispatchQueue.main.async {
             self.displayLayer.setAffineTransform(flipped ? CGAffineTransform(scaleX: 1, y: -1) : .identity)
             if self.displayLayer.status == .failed { self.displayLayer.flush() }
             self.displayLayer.enqueue(sample)
             self.framesThisSecond += 1
         }
+    }
+
+    private func startDisplayLink() {
+        CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
+        guard let displayLink else { return }
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        CVDisplayLinkSetOutputCallback(displayLink, { _, _, _, _, _, context in
+            Unmanaged<Viewer>.fromOpaque(context!).takeUnretainedValue().displayRefresh()
+            return kCVReturnSuccess
+        }, context)
+        CVDisplayLinkStart(displayLink)
     }
 
     private func makeFormatDescription(sps: Data, pps: Data) -> CMVideoFormatDescription? {
