@@ -297,7 +297,10 @@ final class StreamHost {
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: 12_000_000 as CFNumber)
+        // N64 is 640x480 at most; ~4 Mbps looks the same as more and keeps Wi-Fi from queuing
+        // (`defaults write org.openemu.OpenEmu OEStreamBitrate -int <bits per second>` to experiment)
+        let bitrate = UserDefaults(suiteName: "org.openemu.OpenEmu")?.integer(forKey: "OEStreamBitrate") ?? 0
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: (bitrate > 0 ? bitrate : 4_000_000) as CFNumber)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber)
         VTCompressionSessionPrepareToEncodeFrames(newSession)

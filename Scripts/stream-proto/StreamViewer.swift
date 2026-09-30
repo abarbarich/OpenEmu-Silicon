@@ -267,9 +267,22 @@ final class Viewer: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let flipped = flags & 2 != 0
         frameLock.lock()
         frameQueue.append((sample, flipped))
-        // Never hold more than ~4 frames: if the queue backs up, skip ahead to keep the delay short
-        if frameQueue.count > 4 { frameQueue.removeFirst(frameQueue.count - 2) }
+        // Never hold more than ~4 frames: if the queue backs up, skip ahead to keep the delay short.
+        // Skipped frames must still be decoded (later frames are built on them), just not shown.
+        var skipped: [CMSampleBuffer] = []
+        if frameQueue.count > 4 { skipped = frameQueue.prefix(frameQueue.count - 2).map(\.0); frameQueue.removeFirst(frameQueue.count - 2) }
         frameLock.unlock()
+        if !skipped.isEmpty {
+            DispatchQueue.main.async {
+                for sample in skipped {
+                    if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) as NSArray?,
+                       let first = attachments.firstObject as? NSMutableDictionary {
+                        first[kCMSampleAttachmentKey_DoNotDisplay] = true
+                    }
+                    self.displayLayer.enqueue(sample)
+                }
+            }
+        }
     }
 
     /// Called on every display refresh; shows at most one frame per 1/60 s.
